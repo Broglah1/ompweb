@@ -1,4 +1,4 @@
-import { getRunningRpcSessions, subscribeRunningSessions } from "@/lib/rpc-manager";
+import { getExitedRpcSessions, getRunningRpcSessions, subscribeRunningSessions } from "@/lib/rpc-manager";
 import { subscribeSessionFileChanges } from "@/lib/session-watcher";
 
 export const dynamic = "force-dynamic";
@@ -63,11 +63,12 @@ export async function GET(req: Request) {
 
       // Subscribe BEFORE taking the initial snapshot so no state change can slip
       // through the gap between snapshot and subscription.
-      unsubscribeRunning = subscribeRunningSessions(({ ids, runningSessions, refreshSessionList }) => {
+      unsubscribeRunning = subscribeRunningSessions(({ ids, runningSessions, exitedSessions, refreshSessionList }) => {
         encode({
           type: "running",
           runningSessionIds: ids,
           runningSessions,
+          exitedSessions,
           ...(refreshSessionList ? { refreshSessionList: true } : {}),
         });
       });
@@ -82,6 +83,7 @@ export async function GET(req: Request) {
         type: "running",
         runningSessionIds: initialRunning.map((s) => s.id),
         runningSessions: initialRunning,
+        exitedSessions: getExitedRpcSessions(),
       });
       // Heartbeat to keep the connection alive through proxies/timeouts.
       heartbeatTimer = setInterval(() => {

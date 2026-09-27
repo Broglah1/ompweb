@@ -6,7 +6,7 @@ import {
   listAllSessions,
 } from "@/lib/session-reader";
 import { resolveSessionPathOr404 } from "@/lib/api-utils";
-import { getRpcSession } from "@/lib/rpc-manager";
+import { clearExitedRpcSession, getRpcSession } from "@/lib/rpc-manager";
 
 /** POST /api/sessions/[id]/archive — stop the live child, then archive the
  * native OMP JSONL and its sibling artifacts using OMP's gc layout. */
@@ -33,6 +33,7 @@ export async function POST(
     // OMP owns writes while a child is live; wait for its final flush before
     // moving the file so the archive contains the complete native transcript.
     await getRpcSession(id)?.destroyAndWait?.();
+    clearExitedRpcSession(id);
     const archivedPath = archiveSessionFileWithArtifacts(filePath);
     invalidateSessionPathCache(id);
     // The file is gone: full flush is correct (drops its caches + refreshes list).

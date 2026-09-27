@@ -37,25 +37,28 @@ export function sortManagedProjects(projects: ManagedProject[]): ManagedProject[
   });
 }
 
-/** Running/unread session counts per project, for the activity indicators on
- *  project rows. Keys are the case-folded comparable form of the projectRoot
+/** Running/unread/exit session counts per project, for the activity indicators
+ *  on project rows. Keys are the case-folded comparable form of the projectRoot
  *  so casing-only differences (Windows/NTFS) still resolve — callers must
  *  look up with comparableProjectPath(project.path). */
 export function projectActivityCounts(
   sessions: SessionInfo[],
   runningIds: Iterable<string>,
   unreadIds: Iterable<string>,
-): Map<string, { running: number; unread: number }> {
+  exitedIds: Iterable<string> = [],
+): Map<string, { running: number; unread: number; exited: number }> {
   const running = new Set(runningIds);
   const unread = new Set(unreadIds);
-  const result = new Map<string, { running: number; unread: number }>();
+  const exited = new Set(exitedIds);
+  const result = new Map<string, { running: number; unread: number; exited: number }>();
   for (const session of sessions) {
     const key = workspaceKeyOf(session);
     if (!key) continue;
     const folded = comparableProjectPath(session.projectKey ?? key);
-    const current = result.get(folded) ?? { running: 0, unread: 0 };
+    const current = result.get(folded) ?? { running: 0, unread: 0, exited: 0 };
     if (running.has(session.id)) current.running += 1;
     if (unread.has(session.id)) current.unread += 1;
+    if (exited.has(session.id)) current.exited += 1;
     result.set(folded, current);
   }
   return result;
