@@ -836,10 +836,7 @@ const SessionTreeItem = memo(function SessionTreeItem({
     const id = prev.node.session.id;
     if (prev.unreadSessionIds.has(id) !== next.unreadSessionIds.has(id)) return false;
   }
-  if (prev.exitedSessions !== next.exitedSessions) {
-    const id = prev.node.session.id;
-    if (prev.exitedSessions.get(id)?.at !== next.exitedSessions.get(id)?.at) return false;
-  }
+  if (prev.exitedSessions !== next.exitedSessions) return false;
   if (prev.relativeTimeNow !== next.relativeTimeNow) return false;
   if (prev.onSelectSession !== next.onSelectSession
     || prev.onRenamed !== next.onRenamed

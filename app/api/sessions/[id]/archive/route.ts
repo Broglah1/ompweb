@@ -33,8 +33,8 @@ export async function POST(
     // OMP owns writes while a child is live; wait for its final flush before
     // moving the file so the archive contains the complete native transcript.
     await getRpcSession(id)?.destroyAndWait?.();
-    clearExitedRpcSession(id);
     const archivedPath = archiveSessionFileWithArtifacts(filePath);
+    clearExitedRpcSession(id);
     invalidateSessionPathCache(id);
     // The file is gone: full flush is correct (drops its caches + refreshes list).
     invalidateSessionListCache();

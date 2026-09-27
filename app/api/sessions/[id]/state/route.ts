@@ -24,9 +24,12 @@ export async function GET(
       }
     }
 
+    const exited = getExitedRpcSession(id);
+    if (exited) return NextResponse.json({ running: false, exited });
+
     const resolved = await resolveSessionPathOr404(id);
     if ("response" in resolved) return resolved.response;
-    return NextResponse.json({ running: false, exited: getExitedRpcSession(id) });
+    return NextResponse.json({ running: false });
   } catch (error) {
     return apiErrorResponse(error);
   }

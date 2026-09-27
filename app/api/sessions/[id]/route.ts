@@ -421,8 +421,8 @@ export async function DELETE(
     // Await the child's exit before unlinking: omp flushes session state on
     // shutdown and would recreate the file if it were still running.
     await getRpcSession(id)?.destroyAndWait?.();
-    clearExitedRpcSession(id);
     deleteSessionFileWithArtifacts(filePath);
+    clearExitedRpcSession(id);
     invalidateSessionPathCache(id);
     invalidateSessionCaches(); // deletion drops the file: full flush is correct
     return NextResponse.json({
