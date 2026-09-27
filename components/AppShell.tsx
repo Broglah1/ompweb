@@ -1359,6 +1359,10 @@ export function AppShell() {
   // the new tab through pop-up blockers.
   const [pendingOpens, setPendingOpens] = useState<Array<{ kind: "url" | "file"; target: string; name: string; sessionId: string; crossSession: boolean }>>([]);
   const pendingOpen = pendingOpens[0] ?? null;
+  // Keep the last request on screen while the dialog animates closed.
+  const shownOpenRef = useRef(pendingOpen);
+  if (pendingOpen) shownOpenRef.current = pendingOpen;
+  const shownOpen = pendingOpen ?? shownOpenRef.current;
   const dismissPendingOpen = useCallback(() => setPendingOpens((queue) => queue.slice(1)), []);
   const requestOpenUrl = useCallback((url: string, sessionId: string, crossSession: boolean): string => {
     if (!crossSession && openUrlAutomatically) {
@@ -1372,7 +1376,8 @@ export function AppShell() {
   }, [openUrlAutomatically]);
   const handleSessionOpenUrl = useCallback((url: string) => requestOpenUrl(url, selectedSession?.id ?? "", false), [requestOpenUrl, selectedSession?.id]);
   const handleCrossSessionHostTool = useCallback(async (call: CrossSessionHostToolCall) => {
-    const viewing = call.sessionId === selectedSession?.id;
+    // Full-page Settings hides the chat, so its session counts as not viewed.
+    const viewing = call.sessionId === selectedSession?.id && !settingsTab;
     const { text, isError } = await runHostTool(call.toolName, call.arguments, {
       openUrl: (url) => requestOpenUrl(url, call.sessionId, !viewing),
       openFile: (path, name) => {
@@ -1391,7 +1396,7 @@ export function AppShell() {
     } catch (e) {
       console.error("Failed to send host tool result:", e);
     }
-  }, [handleOpenFile, requestOpenUrl, selectedSession?.id]);
+  }, [handleOpenFile, requestOpenUrl, selectedSession?.id, settingsTab]);
   const crossSessionHostToolRef = useRef(handleCrossSessionHostTool);
   useEffect(() => { crossSessionHostToolRef.current = handleCrossSessionHostTool; }, [handleCrossSessionHostTool]);
   useEffect(() => {
@@ -1620,13 +1625,17 @@ export function AppShell() {
       <ConfirmDialog
         open={pendingOpen !== null}
         onOpenChange={(open) => { if (!open) dismissPendingOpen(); }}
-        title={t(pendingOpen?.kind === "file" ? "appShell.openFileTitle" : pendingOpen?.crossSession ? "appShell.openUrlTitle" : "appShell.openUrlSameSessionTitle")}
-        description={t(pendingOpen?.crossSession ? "appShell.openUrlDescription" : "appShell.openUrlSameSessionDescription", { url: pendingOpen?.target ?? "" })}
+        title={t(shownOpen?.kind === "file" ? "appShell.openFileTitle" : shownOpen?.crossSession ? "appShell.openUrlTitle" : "appShell.openUrlSameSessionTitle")}
+        description={t(shownOpen?.crossSession ? "appShell.openUrlDescription" : "appShell.openUrlSameSessionDescription", { url: shownOpen?.target ?? "" })}
         confirmLabel={t("appShell.openUrlConfirm")}
         cancelLabel={t("appShell.openUrlCancel")}
         onConfirm={() => {
           if (pendingOpen?.kind === "url") window.open(pendingOpen.target, "_blank", "noopener,noreferrer");
-          else if (pendingOpen) handleOpenFile(pendingOpen.target, pendingOpen.name, pendingOpen.sessionId);
+          else if (pendingOpen) {
+            // The file panel is hidden behind full-page Settings.
+            setSettingsTab(null);
+            handleOpenFile(pendingOpen.target, pendingOpen.name, pendingOpen.sessionId);
+          }
           dismissPendingOpen();
         }}
       />
