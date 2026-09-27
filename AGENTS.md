@@ -102,6 +102,7 @@ lib/
   tool-presets.ts      PRESET_NONE/DEFAULT/FULL + getToolNamesForPreset()
   types.ts             shared TypeScript types
   normalize.ts         normalizeToolCalls() — field name mismatch between file format and our types
+  word-prediction.ts   pure ghost-text arithmetic (advance/accept) for composer word prediction
   worktree.ts          project/worktree resolution and git worktree operations
 
 components/
@@ -124,6 +125,7 @@ components/
   SkillsConfig.tsx    modal for loaded/search/installable skills
   FileExplorer.tsx    file tree inside sidebar
   FileViewer.tsx      file content in a tab
+  GhostMirror.tsx     textarea overlay painting ghost-text word completion
   TabBar.tsx          tab bar (Chat + open file tabs)
   ui/                 shared primitives: Dialog/Tooltip/Collapsible, fields, toast
 
@@ -134,6 +136,7 @@ hooks/
   useIsMobile.ts           responsive breakpoint hook
   usePrefersReducedMotion.ts OS reduce-motion preference (SMIL-safe)
   useTheme.ts              theme state (localStorage key "omp-theme")
+  useWordPrediction.ts     debounced omp predict_word ghost text + feedback
 ```
 
 ---
@@ -329,6 +332,25 @@ handled or safely ignored.
 - Auth flows go through RPC commands (`get_login_providers`, `login`) against the omp child process; credentials live in omp's `agent.db` (SQLite) which omp-web never touches directly.
 - The Models panel reads and writes `models.yml` in the omp agent directory (`~/.omp/agent/models.yml`, `.yaml` fallback).
 - API-key status endpoints must never return the raw key.
+
+### Composer word prediction (`hooks/useWordPrediction.ts`, `components/GhostMirror.tsx`)
+- Ghost text comes from omp's `predict_word` RPC (engine = omp's
+  `spelling.autocomplete` setting; omp applies the prose gates). Tab or →
+  accepts; accept/typed-past outcomes go back as `predict_word_feedback`.
+- Keystroke predictions never spawn or replace an omp child: the agent route
+  answers `{ suffix: null }` when no process is alive, so sessions that are not
+  running show no ghost text until the first send.
+- Ghost text paints only when the caret ends its line (the mirror overlay would
+  otherwise overlap typed text). Settings → Interface & Behavior → Word
+  completion (`lib/composer-prefs.ts`, localStorage `omp-web:word-completion`):
+  Auto (default) enables it only when the primary pointer is fine
+  (`(pointer: fine)` — mouse/trackpad; browsers cannot detect an on-screen
+  keyboard), Enabled/Disabled force it. Also skipped for
+  drafts past 20k chars (omp's prose-gate cap); an omp without `predict_word`
+  ("Unknown command") pauses requests for a minute.
+- Ghost state lives in a small external store (`useSyncExternalStore` in
+  `GhostMirror`), not ChatInput state: re-rendering the composer per ghost
+  change was the dominant per-keystroke cost.
 
 ### Completion sound
 - `hooks/useAudio.ts` stores the toggle in `localStorage` and reuses one `AudioContext`.

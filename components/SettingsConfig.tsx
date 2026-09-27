@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, useTransition, cloneElement, isValidElement, type ReactElement, type ReactNode } from "react";
-import { getSubmitDuringRunBehavior, setSubmitDuringRunBehavior, type SubmitDuringRunBehavior } from "@/lib/composer-prefs";
+import { getSubmitDuringRunBehavior, getWordCompletionMode, setSubmitDuringRunBehavior, setWordCompletionMode, type SubmitDuringRunBehavior, type WordCompletionMode } from "@/lib/composer-prefs";
 import dynamic from "next/dynamic";
 import { ArrowLeft, Copy, Download, ExternalLink, RefreshCw, RotateCcw, Search, Monitor, Play, Square, Trash2, X } from "lucide-react";
 import { Alert } from "@/components/ui/field";
@@ -142,6 +142,7 @@ const SETTING_INDEX: SettingIndexEntry[] = [
   { id: "chat-font-size", tab: "general", sectionKey: "settingsConfig.interfaceBehavior", labelKey: "settingsConfig.chatFontSize", descKey: "settingsConfig.chatFontSizeDesc", fallbackSection: "Interface & Behavior", fallbackLabel: "Chat Font Size", fallbackDesc: "Adjust text size for conversation messages, code blocks, and markdown output.", scope: "UI" },
   { id: "ui-scale", tab: "general", sectionKey: "settingsConfig.interfaceBehavior", labelKey: "settingsConfig.uiScale", descKey: "settingsConfig.uiScaleDesc", fallbackSection: "Interface & Behavior", fallbackLabel: "Interface Scale", fallbackDesc: "Adjust overall UI zoom and display density across sidebars, dialogs, buttons, and toolbars.", scope: "UI" },
   { id: "message-during-active-run", tab: "general", sectionKey: "settingsConfig.interfaceBehavior", labelKey: "settingsConfig.messageDuringActiveRun", descKey: "settingsConfig.messageDuringActiveRunDesc", fallbackSection: "Interface & Behavior", fallbackLabel: "Message during active run", fallbackDesc: "What composer does on submit while agent runs. Steer interrupts; Queue follow-up delivers after finish.", scope: "UI" },
+  { id: "word-completion", tab: "general", sectionKey: "settingsConfig.interfaceBehavior", labelKey: "settingsConfig.wordCompletion", descKey: "settingsConfig.wordCompletionDesc", fallbackSection: "Interface & Behavior", fallbackLabel: "Word completion", fallbackDesc: "Ghost text from omp's word prediction; Tab or → accepts. Auto enables it only with a mouse or trackpad (not on touch keyboards).", scope: "UI" },
   // Tool Safety & Approvals
   { id: "approval-mode", tab: "safety", sectionKey: "settingsConfig.toolSafetyApprovals", labelKey: "settingsConfig.approvalMode", descKey: "settingsConfig.approvalModeDesc", fallbackSection: "Tool Safety & Approvals", fallbackLabel: "Approval Mode", fallbackDesc: "Choose when OMP asks before tool calls.", scope: "Native OMP" },
   { id: "bash-override", tab: "safety", sectionKey: "settingsConfig.toolSafetyApprovals", labelKey: "settingsConfig.bashOverride", descKey: "settingsConfig.bashOverrideDesc", fallbackSection: "Tool Safety & Approvals", fallbackLabel: "Bash Override", fallbackDesc: "Override default approval policy specifically for terminal commands.", scope: "Native OMP" },
@@ -413,6 +414,7 @@ export function SettingsConfig({ activeTab, toolCallsDefaultCollapsed, onToolCal
   const [searchQuery, setSearchQuery] = useState("");
   const [highlightId, setHighlightId] = useState<string | null>(null);
   const [submitBehavior, setSubmitBehavior] = useState<SubmitDuringRunBehavior>(() => getSubmitDuringRunBehavior());
+  const [wordCompletion, setWordCompletion] = useState<WordCompletionMode>(() => getWordCompletionMode());
   const [soundEnabled, setSoundEnabled] = useState<boolean>(() => {
     if (typeof window === "undefined") return true;
     try {
@@ -926,6 +928,21 @@ export function SettingsConfig({ activeTab, toolCallsDefaultCollapsed, onToolCal
                     >
                       <option value="steer" style={nativeOptionStyle}>{t("settingsConfig.steerCurrentRun")}</option>
                       <option value="queue" style={nativeOptionStyle}>{t("settingsConfig.queueFollowUp")}</option>
+                    </select>
+                  </NativeSetting>
+                  <NativeSetting searchId="word-completion" label={t("settingsConfig.wordCompletion")} description={t("settingsConfig.wordCompletionDesc")} scope="UI">
+                    <select
+                      style={nativeSelectStyle}
+                      value={wordCompletion}
+                      onChange={(event) => {
+                        const next = event.target.value as WordCompletionMode;
+                        setWordCompletionMode(next);
+                        setWordCompletion(next);
+                      }}
+                    >
+                      <option value="auto" style={nativeOptionStyle}>{t("settingsConfig.wordCompletionAuto")}</option>
+                      <option value="on" style={nativeOptionStyle}>{t("settingsConfig.wordCompletionOn")}</option>
+                      <option value="off" style={nativeOptionStyle}>{t("settingsConfig.wordCompletionOff")}</option>
                     </select>
                   </NativeSetting>
                 </div>

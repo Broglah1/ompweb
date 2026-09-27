@@ -1,4 +1,5 @@
 "use client";
+import { sendAgentCommand } from "@/lib/agent-client";
 import { registerAbortHandler } from "@/hooks/useKeyboardShortcuts";
 import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type Ref } from "react";
 import { ArrowDown, ChevronDown, ChevronUp, Layers, Paperclip, Square } from "lucide-react";
@@ -1043,6 +1044,20 @@ export function ChatWindow({ session, newSessionCwd, newSessionWorkspace, toolCa
     };
   }, [advisorRoleSelector, modelList]);
 
+  // Ghost-text word completion rides the session's live omp process (the route
+  // never spawns one for a keystroke); before the first send there is none.
+  const handlePredictWord = useCallback(async (text: string, cursor: number) => {
+    const sid = session?.id ?? sessionIdRef.current;
+    if (!sid) return null;
+    const data = await sendAgentCommand<{ suffix: string | null } | null>(sid, { type: "predict_word", text, cursor });
+    return data?.suffix ?? null;
+  }, [session?.id, sessionIdRef]);
+  const handlePredictWordFeedback = useCallback((text: string, cursor: number, suggestion: string, accepted: boolean) => {
+    const sid = session?.id ?? sessionIdRef.current;
+    if (!sid) return;
+    sendAgentCommand(sid, { type: "predict_word_feedback", text, cursor, suggestion, accepted }).catch(() => {});
+  }, [session?.id, sessionIdRef]);
+
   const handleMinimize = useCallback(() => {
     setComposerMinimized(true);
     /* Focus the pill's expand button after React commits the visibility change */
@@ -1079,6 +1094,8 @@ export function ChatWindow({ session, newSessionCwd, newSessionWorkspace, toolCa
     <ChatInput
       ref={chatInputRef}
       onSend={handleSend}
+      onPredictWord={handlePredictWord}
+      onPredictWordFeedback={handlePredictWordFeedback}
       onAbort={handleAbort}
       onSteer={agentRunning ? handleSteer : undefined}
       onFollowUp={agentRunning ? handleFollowUp : undefined}
