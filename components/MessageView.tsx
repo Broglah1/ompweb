@@ -1562,10 +1562,11 @@ function CustomMessageView({ message, cwd, onOpenFile }: { message: CustomMessag
   const detailsText = hasDetails ? safeJson(message.details) : "";
   const isIrc = IRC_CUSTOM_TYPES.has(message.customType);
   const ircEnvelope = isIrc ? parseIrcEnvelope(text) : null;
-  // Async results are raw job output (bash, task, ...) wrapped in <system-notice>.
-  // As markdown the wrapper turns the body into one raw HTML block (newlines
-  // collapse) and `---` becomes a heading, so strip it and show them verbatim.
-  const isPlainText = message.customType === "async-result";
+  // Async results (raw job output) and late LSP diagnostics are plain text wrapped
+  // in <system-notice>. As markdown the wrapper turns the body into one raw HTML
+  // block (newlines collapse) and `---` becomes a heading, so strip it and show
+  // them verbatim.
+  const isPlainText = message.customType === "async-result" || message.customType === "lsp-late-diagnostic";
   const displayText = ircEnvelope ? ircEnvelope.body : isPlainText ? stripHiddenWrappers(text) : text;
   const title = isIrc
     ? (ircEnvelope?.sender ?? formatCustomType(message.customType))

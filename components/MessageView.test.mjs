@@ -401,6 +401,19 @@ test("async-result notices keep their exact line layout and drop the wrapper tag
   assert.doesNotMatch(html, /system-notice|<h2/);
 });
 
+test("late LSP diagnostic notices keep their exact line layout and drop the wrapper tag", () => {
+  const html = renderToStaticMarkup(React.createElement(MessageView, {
+    message: {
+      role: "custom",
+      customType: "lsp-late-diagnostic",
+      content: "<system-notice>\nLate LSP diagnostics arrived after the edit returned:\n/repo/a.py — 0 error(s), 1 warning(s)\n/repo/a.py:8:1 [warning] [Ruff] Import block is un-sorted or un-formatted\n\nhelp: Organize imports (I001)\n</system-notice>",
+      display: true,
+    },
+  }));
+  assert.match(html, /<pre style="[^"]*white-space:pre;[^"]*">Late LSP diagnostics arrived after the edit returned:\n\/repo\/a\.py — 0 error\(s\), 1 warning\(s\)\n\/repo\/a\.py:8:1 \[warning\] \[Ruff\] Import block is un-sorted or un-formatted\n\nhelp: Organize imports \(I001\)<\/pre>/);
+  assert.doesNotMatch(html, /system-notice/);
+});
+
 
 test("a running tool call shows a spinner instead of the no-result marker", () => {
   const html = renderToStaticMarkup(React.createElement(MessageView, {
