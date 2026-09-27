@@ -1615,7 +1615,7 @@ export function subscribeRunningSessions(listener: (update: RunningSessionUpdate
 // Cross-session host tool calls
 //
 // A registered host tool called while no tab watches its session goes to every
-// open omp-web tab (over the running-sessions SSE) instead of being rejected.
+// open omp-web tab (over /api/agent/host-tools/events) instead of being rejected.
 // ----------------------------------------------------------------------------
 
 function getHostToolListeners(): Set<(call: CrossSessionHostToolCall) => void> {

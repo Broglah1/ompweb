@@ -1377,6 +1377,24 @@ export function AppShell() {
       console.error("Failed to send host tool result:", e);
     }
   }, [handleOpenFile, selectedSession?.id]);
+  const crossSessionHostToolRef = useRef(handleCrossSessionHostTool);
+  useEffect(() => { crossSessionHostToolRef.current = handleCrossSessionHostTool; }, [handleCrossSessionHostTool]);
+  useEffect(() => {
+    // Mounted with the shell (not the sidebar) so it keeps listening on the
+    // full-page Settings view too.
+    const source = new EventSource("/api/agent/host-tools/events");
+    source.onmessage = (e) => {
+      try {
+        const call = JSON.parse(e.data) as CrossSessionHostToolCall & { type?: string };
+        if (call.type === "host_tool_call" && call.sessionId && call.id && call.toolName) {
+          void crossSessionHostToolRef.current({ sessionId: call.sessionId, id: call.id, toolName: call.toolName, arguments: call.arguments ?? {} });
+        }
+      } catch {
+        // ignore malformed frames
+      }
+    };
+    return () => source.close();
+  }, []);
 
   const activeFileTab = fileTabs.find((tab) => tab.id === activeFileTabId) ?? null;
   // Explorer tab browses the active workspace: live cwd first, then the
@@ -1549,7 +1567,6 @@ export function AppShell() {
 
   const sidebarContent = (
     <SessionSidebar
-      onHostToolCall={handleCrossSessionHostTool}
       selectedSessionId={selectedSession?.id ?? null}
       optimisticSession={selectedSession?.path === "" ? selectedSession : null}
       onSelectSession={handleSelectSession}
