@@ -62,6 +62,9 @@ import {
 } from "@/lib/file-fuzzy";
 import { FolderIcon, getFileIcon } from "./FileIcons";
 import { useIsMobile } from "@/hooks/useIsMobile";
+import { useWordPrediction, type PredictWord, type PredictWordFeedback } from "@/hooks/useWordPrediction";
+import { acceptGhost } from "@/lib/word-prediction";
+import { GhostMirror } from "@/components/GhostMirror";
 import { useI18n } from "@/lib/i18n";
 import { selectableThinkingLevels } from "@/lib/thinking-levels";
 import type { ToolPreset } from "@/lib/tool-presets";
@@ -78,6 +81,9 @@ const TOOL_PRESET_OPTIONS: Array<{ value: ToolPreset; descriptionKey: string }> 
 
 interface Props {
   onSend: (message: string, images?: AttachedImage[]) => void;
+  /** Ghost-text word completion for the draft (omp `predict_word`); absent = no ghost text. */
+  onPredictWord?: PredictWord;
+  onPredictWordFeedback?: PredictWordFeedback;
   onAbort: () => void;
   onSteer?: (message: string, images?: AttachedImage[]) => void;
   onFollowUp?: (message: string, images?: AttachedImage[]) => void;
@@ -236,7 +242,7 @@ function menuDropStyle(placement: MenuPlacement, maxHeight: number | null): Reac
 
 
 export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatInput({
-  onSend, onAbort, onSteer, onFollowUp, isStreaming, model, isAutoModelSelection, modelNames, modelList, modelError, modelsLoading, onModelChange, fastModeEnabled, fastModeActive, fastModeSupported, onFastModeChange,
+  onSend, onPredictWord, onPredictWordFeedback, onAbort, onSteer, onFollowUp, isStreaming, model, isAutoModelSelection, modelNames, modelList, modelError, modelsLoading, onModelChange, fastModeEnabled, fastModeActive, fastModeSupported, onFastModeChange,
   onAbortCompaction, isCompacting, compactResult,
   thinkingLevel, onThinkingLevelChange, availableThinkingLevels, thinkingLevelMap, modelNameOverride,
   toolPreset, onToolPresetChange,
@@ -265,6 +271,12 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
   onOpenProviders,
 }: Props, ref) {
   const isMobile = useIsMobile();
+  // Soft keyboards bring their own suggestions and have no Tab key.
+  const wordPrediction = useWordPrediction(
+    isMobile ? undefined : onPredictWord,
+    isMobile ? undefined : onPredictWordFeedback,
+  );
+  const ghostMirrorRef = useRef<HTMLDivElement>(null);
   const composerId = React.useId();
   const historyListboxId = `${composerId}-history`;
   const slashListboxId = `${composerId}-slash`;
@@ -1348,6 +1360,29 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
         }
       }
 
+      // Tab (or → at the end of the line) accepts the ghost word, like omp's editor.
+      const ghost = wordPrediction.peek();
+      if (
+        ghost && ghost.text === value && !isComposing && !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey &&
+        (e.key === "Tab" || e.key === "ArrowRight") &&
+        e.currentTarget.selectionStart === ghost.cursor && e.currentTarget.selectionEnd === ghost.cursor
+      ) {
+        e.preventDefault();
+        const taken = wordPrediction.take();
+        if (taken) {
+          const next = acceptGhost(taken);
+          setValue(next.text);
+          requestAnimationFrame(() => {
+            const el = textareaRef.current;
+            if (!el) return;
+            el.setSelectionRange(next.cursor, next.cursor);
+            el.style.height = "auto";
+            el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+          });
+        }
+        return;
+      }
+
       if (e.key === "ArrowUp" && !isComposing && !isStreaming && inputHistory.length > 0 && value.trim().length === 0) {
         e.preventDefault();
         setSlashMenuOpen(false);
@@ -1386,7 +1421,7 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
         }
       }
     },
-    [isMobile, isStreaming, onSteer, onFollowUp, onAbort, onMinimize, slashMenuOpen, slashQuery, filteredSlashCommands, slashActiveIndex, applySlashCommand, sendQueued, handleSend, getNextSlashIndex, atMenuOpen, atQuery, atMatches, atActiveIndex, applyAtCompletion, historyMenuOpen, inputHistory, historyActiveIndex, applyHistoryInput, value, startFreshDictation]
+    [isMobile, isStreaming, onSteer, onFollowUp, onAbort, onMinimize, slashMenuOpen, slashQuery, filteredSlashCommands, slashActiveIndex, applySlashCommand, sendQueued, handleSend, getNextSlashIndex, atMenuOpen, atQuery, atMatches, atActiveIndex, applyAtCompletion, historyMenuOpen, inputHistory, historyActiveIndex, applyHistoryInput, value, startFreshDictation, wordPrediction]
   );
 
 
@@ -2409,6 +2444,8 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
               onDiscard={cancelDictationAndReset}
             />
           ) : (
+          <div style={{ position: "relative" }}>
+          <GhostMirror ref={ghostMirrorRef} textareaRef={textareaRef} prediction={wordPrediction} value={value} />
           <textarea
             ref={textareaRef}
             value={value}
@@ -2416,10 +2453,18 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
               setValue(e.target.value);
               setHistoryMenuOpen(false);
               updateAtQuery(e.target.value, e.target.selectionStart);
+              // Half-composed IME text is not a word yet; compositionend reports the result.
+              if (!isComposingRef.current) {
+                wordPrediction.update(e.target.value, e.target.selectionStart, e.target.selectionEnd);
+              }
             }}
             onSelect={(e) => {
               const el = e.currentTarget;
               updateAtQuery(el.value, el.selectionStart);
+              if (!isComposingRef.current) wordPrediction.update(el.value, el.selectionStart, el.selectionEnd);
+            }}
+            onScroll={(e) => {
+              if (ghostMirrorRef.current) ghostMirrorRef.current.scrollTop = e.currentTarget.scrollTop;
             }}
             onKeyDown={handleKeyDown}
             onCompositionStart={() => {
@@ -2430,6 +2475,7 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
               lastCompositionEndAtRef.current = Date.now();
               const el = e.currentTarget;
               updateAtQuery(el.value, el.selectionStart);
+              wordPrediction.update(el.value, el.selectionStart, el.selectionEnd);
             }}
             onPaste={handlePaste}
             placeholder={t("chatInput.placeholder")}
@@ -2454,8 +2500,10 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
               minHeight: 24,
               maxHeight: 200,
               overflow: "auto",
+              position: "relative",
             }}
           />
+          </div>
           )}
 
           {/* Toolbar: plus menu · model · reasoning · fast · compact · send/queue/stop */}

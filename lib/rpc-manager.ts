@@ -109,7 +109,13 @@ const PASSTHROUGH_COMMANDS = new Set([
   "set_subagent_subscription",
   "get_login_providers",
   "login",
+  "predict_word",
+  "predict_word_feedback",
 ]);
+
+// Outlasts omp's own 30s budget for a cold prediction-daemon start, so omp's
+// answer (or error) decides; a wedged daemon still cannot pin the request forever.
+const PREDICT_WORD_TIMEOUT_MS = 40_000;
 
 // Commands that can carry user-attached images to the model. All of them must
 // pass the same server-side per-image/count/aggregate validation before the
@@ -1413,7 +1419,10 @@ export class AgentSessionWrapper {
             this.responseRunActive = false;
             this.streamSequence += 1;
           }
-          const result: unknown = await this.proc.sendCommand(command as { type: string });
+          const result: unknown = await this.proc.sendCommand(
+            command as { type: string },
+            type === "predict_word" ? PREDICT_WORD_TIMEOUT_MS : undefined,
+          );
           if (type === "set_thinking_level") this.invalidateSessionLists();
           return result ?? null;
         }
