@@ -54,6 +54,8 @@ interface Props {
   onSessionStatsPanelOpen?: () => void;
   onProviderUsageContextChange?: (context: ProviderUsageContext | null) => void;
   onOpenFile?: (filePath: string) => void;
+  /** Handles the open_url host tool; returns the result text for the agent. */
+  onOpenUrl?: (url: string) => string;
   onGenerationSpeedChange?: (speed: GenerationSpeedInfo | null) => void;
   /** Open Settings → API Keys & Providers (from the model picker). */
   onOpenProviders?: () => void;
@@ -561,7 +563,7 @@ const CommittedTranscript = memo(function CommittedTranscript({
   );
 });
 
-export function ChatWindow({ session, newSessionCwd, newSessionWorkspace, toolCallsDefaultCollapsed = true, onAgentEnd, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSystemPromptLoaderChange, onSessionStatsChange, onSessionStatsPanelOpen, onProviderUsageContextChange, onGenerationSpeedChange, onOpenFile, onOpenProviders }: Props) {
+export function ChatWindow({ session, newSessionCwd, newSessionWorkspace, toolCallsDefaultCollapsed = true, onAgentEnd, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSystemPromptLoaderChange, onSessionStatsChange, onSessionStatsPanelOpen, onProviderUsageContextChange, onGenerationSpeedChange, onOpenFile, onOpenUrl, onOpenProviders }: Props) {
   const { t, tn } = useI18n();
   const { playDoneSound, unlockAudio } = useAudio();
   const isMobile = useIsMobile();
@@ -617,7 +619,7 @@ export function ChatWindow({ session, newSessionCwd, newSessionWorkspace, toolCa
   } = useAgentSession({
     session, newSessionCwd, onAgentEnd: wrappedOnAgentEnd, onSessionCreated, onSessionForked,
     modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSystemPromptLoaderChange, onSessionStatsPanelOpen,
-    onOpenFile,
+    onOpenFile, onOpenUrl,
   });
   useEffect(() => {
     if (!autoplayPendingRef.current) return;

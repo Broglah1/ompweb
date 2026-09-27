@@ -180,13 +180,15 @@ export interface UseAgentSessionOptions {
   setToolPreset?: (preset: "none" | "default" | "full") => void;
   /** Opens a file in the web UI's file viewer (used by the open_file host tool). */
   onOpenFile?: (filePath: string, name: string, sessionId?: string) => void;
+  /** Handles the open_url host tool (may ask the user first); returns the result text. */
+  onOpenUrl?: (url: string) => string;
 }
 
 export function useAgentSession(opts: UseAgentSessionOptions) {
   const {
     session, newSessionCwd, onAgentEnd, onSessionCreated, onSessionForked,
     modelsRefreshKey, onBranchDataChange, onSystemPromptChange, onSystemPromptLoaderChange, onSessionStatsPanelOpen,
-    onOpenFile,
+    onOpenFile, onOpenUrl,
   } = opts;
   const reducedMotion = usePrefersReducedMotion();
   const isNew = session === null && newSessionCwd !== null;
@@ -1228,15 +1230,14 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     const sid = sessionIdRef.current;
     if (!sid) return;
     const { text, isError } = await runHostTool(toolName, args, {
-      openUrl: (url) => {
-        const opened = window.open(url, "_blank", "noopener,noreferrer");
-        opened?.focus?.();
+      openUrl: onOpenUrl ?? ((url) => {
+        window.open(url, "_blank", "noopener,noreferrer")?.focus?.();
         return `Opened ${url}`;
-      },
+      }),
       openFile: onOpenFile ? (path, name) => onOpenFile(path, name, sid) : undefined,
     });
     await respondHostTool(sid, id, text, isError);
-  }, [onOpenFile, respondHostTool]);
+  }, [onOpenFile, onOpenUrl, respondHostTool]);
 
   /** Answer a host_uri_request (agent read/write of a registered scheme). */
   const respondHostUri = useCallback(async (sid: string, id: string, frame: { content?: string; contentType?: "text/markdown" | "application/json" | "text/plain"; isError?: boolean; error?: string }) => {

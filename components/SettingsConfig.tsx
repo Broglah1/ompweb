@@ -135,6 +135,7 @@ const SETTING_INDEX: SettingIndexEntry[] = [
   // Interface & Behavior
   { id: "completion-sound", tab: "general", sectionKey: "settingsConfig.interfaceBehavior", labelKey: "settingsConfig.completionSound", descKey: "settingsConfig.completionSoundDesc", fallbackSection: "Interface & Behavior", fallbackLabel: "Completion sound", fallbackDesc: "Play a tone when the agent completes a run.", scope: "UI" },
   { id: "keep-tool-calls-collapsed", tab: "general", sectionKey: "settingsConfig.interfaceBehavior", labelKey: "settingsConfig.keepToolCallsCollapsed", descKey: "settingsConfig.keepToolCallsCollapsedDesc", fallbackSection: "Interface & Behavior", fallbackLabel: "Keep tool calls collapsed", fallbackDesc: "Show only compact headers while tools execute.", scope: "UI" },
+  { id: "open-url-automatically", tab: "general", sectionKey: "settingsConfig.interfaceBehavior", labelKey: "settingsConfig.openUrlAutomatically", descKey: "settingsConfig.openUrlAutomaticallyDesc", fallbackSection: "Interface & Behavior", fallbackLabel: "Open agent links without asking", fallbackDesc: "Links the agent opens from the session you are viewing open in a new tab right away. Links from other sessions always ask first. Your browser may still block pop-ups.", scope: "UI" },
   { id: "scope-native-select-all", tab: "general", sectionKey: "settingsConfig.interfaceBehavior", labelKey: "settingsConfig.scopeNativeSelectAll", descKey: "settingsConfig.scopeNativeSelectAllDesc", fallbackSection: "Interface & Behavior", fallbackLabel: "Scope native Select All (experimental)", fallbackDesc: "Limit whole-page selections from browser or touch menus to the active message, chat, or file. May also narrow deliberate whole-page selections. Turn off if selection handles or menus misbehave. Keyboard shortcuts are unaffected.", scope: "UI" },
   { id: "tts-autoplay", tab: "general", sectionKey: "settingsConfig.interfaceBehavior", labelKey: "settingsConfig.ttsAutoplay", descKey: "settingsConfig.ttsAutoplayDesc", fallbackSection: "Interface & Behavior", fallbackLabel: "Auto-read assistant responses", fallbackDesc: "Automatically read aloud new assistant replies when completed.", scope: "UI" },
   { id: "tts-voice", tab: "general", sectionKey: "settingsConfig.interfaceBehavior", labelKey: "settingsConfig.ttsVoice", descKey: "settingsConfig.ttsVoiceDesc", fallbackSection: "Interface & Behavior", fallbackLabel: "Speech Voice", fallbackDesc: "Select the browser voice for text-to-speech reading.", scope: "UI" },
@@ -377,7 +378,7 @@ function NativeSetting({ label, description, scope, searchId, children }: { labe
   );
 }
 
-export function SettingsConfig({ activeTab, toolCallsDefaultCollapsed, onToolCallsDefaultCollapsedChange, providerUsageVisible, onProviderUsageVisibleChange, scopeNativeSelectAll, onScopeNativeSelectAllChange, cwd, sessionId, onModelsSaved, onPluginsReloaded, appUpdate, ompUpdateAvailable, ompUpdatesDisabled, onRefreshAppUpdate, onOmpUpdateAvailabilityChange, onRequestAppUpdate, onSelectTab, onClose }: {
+export function SettingsConfig({ activeTab, toolCallsDefaultCollapsed, onToolCallsDefaultCollapsedChange, providerUsageVisible, onProviderUsageVisibleChange, scopeNativeSelectAll, onScopeNativeSelectAllChange, openUrlAutomatically, onOpenUrlAutomaticallyChange, cwd, sessionId, onModelsSaved, onPluginsReloaded, appUpdate, ompUpdateAvailable, ompUpdatesDisabled, onRefreshAppUpdate, onOmpUpdateAvailabilityChange, onRequestAppUpdate, onSelectTab, onClose }: {
   activeTab: SettingsTab;
   toolCallsDefaultCollapsed: boolean;
   onToolCallsDefaultCollapsedChange: (collapsed: boolean) => void;
@@ -385,6 +386,8 @@ export function SettingsConfig({ activeTab, toolCallsDefaultCollapsed, onToolCal
   onProviderUsageVisibleChange: (visible: boolean) => void;
   scopeNativeSelectAll: boolean;
   onScopeNativeSelectAllChange: (enabled: boolean) => void;
+  openUrlAutomatically: boolean;
+  onOpenUrlAutomaticallyChange: (enabled: boolean) => void;
   cwd: string | null;
   sessionId: string | null;
   onModelsSaved: () => void;
@@ -846,6 +849,9 @@ export function SettingsConfig({ activeTab, toolCallsDefaultCollapsed, onToolCal
                   </NativeSetting>
                   <NativeSetting searchId="scope-native-select-all" label={t("settingsConfig.scopeNativeSelectAll")} description={t("settingsConfig.scopeNativeSelectAllDesc")} scope="UI">
                     <ToggleSwitch checked={scopeNativeSelectAll} onChange={onScopeNativeSelectAllChange} />
+                  </NativeSetting>
+                  <NativeSetting searchId="open-url-automatically" label={t("settingsConfig.openUrlAutomatically")} description={t("settingsConfig.openUrlAutomaticallyDesc")} scope="UI">
+                    <ToggleSwitch checked={openUrlAutomatically} onChange={onOpenUrlAutomaticallyChange} />
                   </NativeSetting>
                   <NativeSetting searchId="completion-sound" label={t("settingsConfig.completionSound")} description={t("settingsConfig.completionSoundDesc")} scope="UI">
                     <ToggleSwitch

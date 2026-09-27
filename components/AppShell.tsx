@@ -89,6 +89,7 @@ const RightPanel = dynamic(() => import("./RightPanel").then((m) => m.RightPanel
 const TOOL_CALLS_COLLAPSED_STORAGE_KEY = "omp-web:tool-calls-collapsed";
 const PROVIDER_USAGE_VISIBLE_STORAGE_KEY = "omp-web:provider-usage-visible";
 const NATIVE_SELECT_ALL_STORAGE_KEY = "omp-web:scope-native-select-all";
+const OPEN_URL_AUTOMATICALLY_STORAGE_KEY = "omp-web:open-url-automatically";
 
 
 type AutoNameStatus =
@@ -130,6 +131,7 @@ export function AppShell() {
   const [toolCallsDefaultCollapsed, setToolCallsDefaultCollapsed] = useState(true);
   const [providerUsageVisible, setProviderUsageVisible] = useState(true);
   const [scopeNativeSelectAll, setScopeNativeSelectAll] = useState(false);
+  const [openUrlAutomatically, setOpenUrlAutomatically] = useState(false);
   const [sidebarResizing, setSidebarResizing] = useState(false);
   // Active drag handlers so an unmount mid-drag can detach them.
   const sidebarResizeHandlersRef = useRef<{ onMove: (ev: MouseEvent) => void; onUp: () => void } | null>(null);
@@ -145,6 +147,7 @@ export function AppShell() {
       setToolCallsDefaultCollapsed(window.localStorage.getItem(TOOL_CALLS_COLLAPSED_STORAGE_KEY) !== "false");
       setProviderUsageVisible(window.localStorage.getItem(PROVIDER_USAGE_VISIBLE_STORAGE_KEY) !== "false");
       setScopeNativeSelectAll(window.localStorage.getItem(NATIVE_SELECT_ALL_STORAGE_KEY) === "true");
+      setOpenUrlAutomatically(window.localStorage.getItem(OPEN_URL_AUTOMATICALLY_STORAGE_KEY) === "true");
     } catch {
       // Keep the compact default when storage is unavailable.
     }
@@ -169,6 +172,14 @@ export function AppShell() {
     setScopeNativeSelectAll(enabled);
     try {
       window.localStorage.setItem(NATIVE_SELECT_ALL_STORAGE_KEY, String(enabled));
+    } catch {
+      // The preference still applies for this page load.
+    }
+  }, []);
+  const handleOpenUrlAutomaticallyChange = useCallback((enabled: boolean) => {
+    setOpenUrlAutomatically(enabled);
+    try {
+      window.localStorage.setItem(OPEN_URL_AUTOMATICALLY_STORAGE_KEY, String(enabled));
     } catch {
       // The preference still applies for this page load.
     }
@@ -1341,29 +1352,33 @@ export function AppShell() {
     if (isMobile) setSidebarOpen(false);
   }, [isMobile]);
 
-  // Host tools called by a session this tab is not viewing (the user switched
-  // sessions mid-run). URLs and files from another session queue behind a
-  // confirmation so they cannot take over the current view; for URLs the click
-  // is also the user gesture that lets the new tab through pop-up blockers.
-  const [crossSessionOpens, setCrossSessionOpens] = useState<Array<{ kind: "url" | "file"; target: string; name: string; sessionId: string }>>([]);
-  const crossSessionOpen = crossSessionOpens[0] ?? null;
-  const dismissCrossSessionOpen = useCallback(() => setCrossSessionOpens((queue) => queue.slice(1)), []);
+  // Agent open requests that wait for the user. URLs always ask unless the
+  // user opted into opening links from the viewed session automatically; URLs
+  // and files from a session this tab is not viewing always ask, so they cannot
+  // take over the current view. The click is also the user gesture that lets
+  // the new tab through pop-up blockers.
+  const [pendingOpens, setPendingOpens] = useState<Array<{ kind: "url" | "file"; target: string; name: string; sessionId: string; crossSession: boolean }>>([]);
+  const pendingOpen = pendingOpens[0] ?? null;
+  const dismissPendingOpen = useCallback(() => setPendingOpens((queue) => queue.slice(1)), []);
+  const requestOpenUrl = useCallback((url: string, sessionId: string, crossSession: boolean): string => {
+    if (!crossSession && openUrlAutomatically) {
+      window.open(url, "_blank", "noopener,noreferrer")?.focus?.();
+      return `Opened ${url}`;
+    }
+    setPendingOpens((queue) => [...queue, { kind: "url", target: url, name: url, sessionId, crossSession }]);
+    return crossSession
+      ? `Asked the user to confirm opening ${url}; they are viewing another omp-web session.`
+      : `Asked the user to confirm opening ${url}.`;
+  }, [openUrlAutomatically]);
+  const handleSessionOpenUrl = useCallback((url: string) => requestOpenUrl(url, selectedSession?.id ?? "", false), [requestOpenUrl, selectedSession?.id]);
   const handleCrossSessionHostTool = useCallback(async (call: CrossSessionHostToolCall) => {
     const viewing = call.sessionId === selectedSession?.id;
-    const confirmed = (target: string) => `Asked the user to confirm opening ${target}; they are viewing another omp-web session.`;
     const { text, isError } = await runHostTool(call.toolName, call.arguments, {
-      openUrl: (url) => {
-        if (viewing) {
-          window.open(url, "_blank", "noopener,noreferrer")?.focus?.();
-          return `Opened ${url}`;
-        }
-        setCrossSessionOpens((queue) => [...queue, { kind: "url", target: url, name: url, sessionId: call.sessionId }]);
-        return confirmed(url);
-      },
+      openUrl: (url) => requestOpenUrl(url, call.sessionId, !viewing),
       openFile: (path, name) => {
         if (viewing) return handleOpenFile(path, name, call.sessionId);
-        setCrossSessionOpens((queue) => [...queue, { kind: "file", target: path, name, sessionId: call.sessionId }]);
-        return confirmed(path);
+        setPendingOpens((queue) => [...queue, { kind: "file", target: path, name, sessionId: call.sessionId, crossSession: true }]);
+        return `Asked the user to confirm opening ${path}; they are viewing another omp-web session.`;
       },
     });
     try {
@@ -1376,7 +1391,7 @@ export function AppShell() {
     } catch (e) {
       console.error("Failed to send host tool result:", e);
     }
-  }, [handleOpenFile, selectedSession?.id]);
+  }, [handleOpenFile, requestOpenUrl, selectedSession?.id]);
   const crossSessionHostToolRef = useRef(handleCrossSessionHostTool);
   useEffect(() => { crossSessionHostToolRef.current = handleCrossSessionHostTool; }, [handleCrossSessionHostTool]);
   useEffect(() => {
@@ -1603,16 +1618,16 @@ export function AppShell() {
         onConfirm={sidebarHistory.leave}
       />
       <ConfirmDialog
-        open={crossSessionOpen !== null}
-        onOpenChange={(open) => { if (!open) dismissCrossSessionOpen(); }}
-        title={t(crossSessionOpen?.kind === "file" ? "appShell.openFileTitle" : "appShell.openUrlTitle")}
-        description={t("appShell.openUrlDescription", { url: crossSessionOpen?.target ?? "" })}
+        open={pendingOpen !== null}
+        onOpenChange={(open) => { if (!open) dismissPendingOpen(); }}
+        title={t(pendingOpen?.kind === "file" ? "appShell.openFileTitle" : pendingOpen?.crossSession ? "appShell.openUrlTitle" : "appShell.openUrlSameSessionTitle")}
+        description={t(pendingOpen?.crossSession ? "appShell.openUrlDescription" : "appShell.openUrlSameSessionDescription", { url: pendingOpen?.target ?? "" })}
         confirmLabel={t("appShell.openUrlConfirm")}
         cancelLabel={t("appShell.openUrlCancel")}
         onConfirm={() => {
-          if (crossSessionOpen?.kind === "url") window.open(crossSessionOpen.target, "_blank", "noopener,noreferrer");
-          else if (crossSessionOpen) handleOpenFile(crossSessionOpen.target, crossSessionOpen.name, crossSessionOpen.sessionId);
-          dismissCrossSessionOpen();
+          if (pendingOpen?.kind === "url") window.open(pendingOpen.target, "_blank", "noopener,noreferrer");
+          else if (pendingOpen) handleOpenFile(pendingOpen.target, pendingOpen.name, pendingOpen.sessionId);
+          dismissPendingOpen();
         }}
       />
       <CommandPaletteMount
@@ -1786,6 +1801,8 @@ export function AppShell() {
             onProviderUsageVisibleChange={handleProviderUsageVisibleChange}
             scopeNativeSelectAll={scopeNativeSelectAll}
             onScopeNativeSelectAllChange={handleScopeNativeSelectAllChange}
+            openUrlAutomatically={openUrlAutomatically}
+            onOpenUrlAutomaticallyChange={handleOpenUrlAutomaticallyChange}
             cwd={activeCwd ?? selectedSession?.cwd ?? newSessionCwd}
             sessionId={selectedSession?.id ?? null}
             onModelsSaved={() => setModelsRefreshKey((k) => k + 1)}
@@ -2215,6 +2232,7 @@ export function AppShell() {
               modelsRefreshKey={modelsRefreshKey}
               chatInputRef={chatInputRef}
               onOpenFile={handleOpenLinkedFile}
+              onOpenUrl={handleSessionOpenUrl}
               onBranchDataChange={handleBranchDataChange}
               onSystemPromptChange={handleSystemPromptChange}
               onSystemPromptLoaderChange={handleSystemPromptLoaderChange}
