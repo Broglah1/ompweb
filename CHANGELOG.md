@@ -16,6 +16,7 @@ All notable changes to **omp-web** (`@kahme247/ompweb`) are documented in this f
 
 ### Fixes & Improvements
 
+- Show late LSP diagnostic notices with their original line breaks, like async results, instead of collapsing them onto one line.
 - Unexpected omp process exits now remain visible in the workspace and session sidebar until that session starts again, including the exit code or signal and the last stderr line.
 - Show free-text answers to agent questions (the ask tool's "Other" option and other `promptStyle` editor requests) in the chat font instead of the monospace code font.
 - Keep line breaks in agent dialog titles instead of running multi-line titles together on one line.
