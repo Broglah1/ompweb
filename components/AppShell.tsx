@@ -62,7 +62,9 @@ import {
   projectLabel,
   WorkspaceState,
 } from "./AppShell-layout";
-import type { ManagedProject, SessionInfo, SessionTreeNode } from "@/lib/types";
+import type { CrossSessionHostToolCall, ManagedProject, SessionInfo, SessionTreeNode } from "@/lib/types";
+import { runHostTool } from "@/hooks/useAgentSession-stream";
+import { sendAgentCommand } from "@/lib/agent-client";
 import type { ChatInputHandle } from "./ChatInput";
 import type { SessionStatsInfo, GenerationSpeedInfo } from "@/lib/pi-types";
 import type { SettingsTab } from "./SettingsTabs";
@@ -1339,6 +1341,43 @@ export function AppShell() {
     if (isMobile) setSidebarOpen(false);
   }, [isMobile]);
 
+  // Host tools called by a session this tab is not viewing (the user switched
+  // sessions mid-run). URLs and files from another session queue behind a
+  // confirmation so they cannot take over the current view; for URLs the click
+  // is also the user gesture that lets the new tab through pop-up blockers.
+  const [crossSessionOpens, setCrossSessionOpens] = useState<Array<{ kind: "url" | "file"; target: string; name: string; sessionId: string }>>([]);
+  const crossSessionOpen = crossSessionOpens[0] ?? null;
+  const dismissCrossSessionOpen = useCallback(() => setCrossSessionOpens((queue) => queue.slice(1)), []);
+  const handleCrossSessionHostTool = useCallback(async (call: CrossSessionHostToolCall) => {
+    const viewing = call.sessionId === selectedSession?.id;
+    const confirmed = (target: string) => `Asked the user to confirm opening ${target}; they are viewing another omp-web session.`;
+    const { text, isError } = await runHostTool(call.toolName, call.arguments, {
+      openUrl: (url) => {
+        if (viewing) {
+          window.open(url, "_blank", "noopener,noreferrer")?.focus?.();
+          return `Opened ${url}`;
+        }
+        setCrossSessionOpens((queue) => [...queue, { kind: "url", target: url, name: url, sessionId: call.sessionId }]);
+        return confirmed(url);
+      },
+      openFile: (path, name) => {
+        if (viewing) return handleOpenFile(path, name, call.sessionId);
+        setCrossSessionOpens((queue) => [...queue, { kind: "file", target: path, name, sessionId: call.sessionId }]);
+        return confirmed(path);
+      },
+    });
+    try {
+      await sendAgentCommand(call.sessionId, {
+        type: "host_tool_result",
+        id: call.id,
+        isError,
+        result: { content: [{ type: "text", text }] },
+      });
+    } catch (e) {
+      console.error("Failed to send host tool result:", e);
+    }
+  }, [handleOpenFile, selectedSession?.id]);
+
   const activeFileTab = fileTabs.find((tab) => tab.id === activeFileTabId) ?? null;
   // Explorer tab browses the active workspace: live cwd first, then the
   // selected / new-session cwd (mirrors what the sidebar used to pass down).
@@ -1510,6 +1549,7 @@ export function AppShell() {
 
   const sidebarContent = (
     <SessionSidebar
+      onHostToolCall={handleCrossSessionHostTool}
       selectedSessionId={selectedSession?.id ?? null}
       optimisticSession={selectedSession?.path === "" ? selectedSession : null}
       onSelectSession={handleSelectSession}
@@ -1544,6 +1584,19 @@ export function AppShell() {
         cancelLabel={t("appShell.exitStay")}
         danger
         onConfirm={sidebarHistory.leave}
+      />
+      <ConfirmDialog
+        open={crossSessionOpen !== null}
+        onOpenChange={(open) => { if (!open) dismissCrossSessionOpen(); }}
+        title={t(crossSessionOpen?.kind === "file" ? "appShell.openFileTitle" : "appShell.openUrlTitle")}
+        description={t("appShell.openUrlDescription", { url: crossSessionOpen?.target ?? "" })}
+        confirmLabel={t("appShell.openUrlConfirm")}
+        cancelLabel={t("appShell.openUrlCancel")}
+        onConfirm={() => {
+          if (crossSessionOpen?.kind === "url") window.open(crossSessionOpen.target, "_blank", "noopener,noreferrer");
+          else if (crossSessionOpen) handleOpenFile(crossSessionOpen.target, crossSessionOpen.name, crossSessionOpen.sessionId);
+          dismissCrossSessionOpen();
+        }}
       />
       <CommandPaletteMount
         onSelectSession={handleSelectSession}

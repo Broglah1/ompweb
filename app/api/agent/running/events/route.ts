@@ -1,4 +1,4 @@
-import { getExitedRpcSessions, getRunningRpcSessions, subscribeRunningSessions } from "@/lib/rpc-manager";
+import { getExitedRpcSessions, getRunningRpcSessions, subscribeHostToolCalls, subscribeRunningSessions } from "@/lib/rpc-manager";
 import { subscribeSessionFileChanges } from "@/lib/session-watcher";
 
 export const dynamic = "force-dynamic";
@@ -18,6 +18,7 @@ export async function GET(req: Request) {
       let cleaned = false;
       let unsubscribeRunning: (() => void) | null = null;
       let unsubscribeFiles: (() => void) | null = null;
+      let unsubscribeHostTools: (() => void) | null = null;
       let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
       const cleanup = () => {
@@ -35,6 +36,10 @@ export async function GET(req: Request) {
         if (unsubscribeFiles) {
           try { unsubscribeFiles(); } catch {}
           unsubscribeFiles = null;
+        }
+        if (unsubscribeHostTools) {
+          try { unsubscribeHostTools(); } catch {}
+          unsubscribeHostTools = null;
         }
         req.signal?.removeEventListener("abort", cleanup);
         try {
@@ -75,6 +80,11 @@ export async function GET(req: Request) {
 
       unsubscribeFiles = subscribeSessionFileChanges((sessionIds) => {
         encode({ type: "sessions-changed", sessionIds, refreshSessionList: true });
+      });
+
+      // Host tools called by sessions no tab is watching (open_url, ...).
+      unsubscribeHostTools = subscribeHostToolCalls((call) => {
+        encode({ type: "host_tool_call", ...call });
       });
 
       // Initial snapshot so the client renders the correct state immediately.

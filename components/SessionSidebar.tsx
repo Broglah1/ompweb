@@ -1,7 +1,7 @@
 "use client";
 
 import { memo, useEffect, useLayoutEffect, useState, useCallback, useRef, useMemo, useDeferredValue } from "react";
-import type { ExitedRpcSession, ManagedProject, ProjectLaunchConfig, SessionInfo } from "@/lib/types";
+import type { CrossSessionHostToolCall, ExitedRpcSession, ManagedProject, ProjectLaunchConfig, SessionInfo } from "@/lib/types";
 import { useI18n } from "@/lib/i18n";
 import { formatApiError } from "@/lib/i18n/api-error";
 import { DirectoryPicker } from "./DirectoryPicker";
@@ -71,6 +71,8 @@ interface Props {
   onOpenArchive?: () => void;
   /** True when settings full-page view is currently open. */
   settingsOpen?: boolean;
+  /** Host tool calls for sessions no tab is watching (delivered on the running SSE). */
+  onHostToolCall?: (call: CrossSessionHostToolCall) => void;
 }
 
 
@@ -78,7 +80,7 @@ interface Props {
 
 
 
-export const SessionSidebar = memo(function SessionSidebar({ selectedSessionId, optimisticSession, onSelectSession, onNewSession, initialSessionId, skipInitialProjectSelection, onInitialRestoreDone, refreshKey, onSessionDeleted, selectedCwd: selectedCwdProp, onCwdChange, onWorkspaceOptionsChange, addProjectOpen, setAddProjectOpen, usageVisible = true, onOpenSettings, onOpenArchive, updateAvailable, settingsOpen = false }: Props) {
+export const SessionSidebar = memo(function SessionSidebar({ selectedSessionId, optimisticSession, onSelectSession, onNewSession, initialSessionId, skipInitialProjectSelection, onInitialRestoreDone, refreshKey, onSessionDeleted, selectedCwd: selectedCwdProp, onCwdChange, onWorkspaceOptionsChange, addProjectOpen, setAddProjectOpen, usageVisible = true, onOpenSettings, onOpenArchive, updateAvailable, settingsOpen = false, onHostToolCall }: Props) {
 
 
   const { t } = useI18n();
@@ -262,6 +264,9 @@ export const SessionSidebar = memo(function SessionSidebar({ selectedSessionId, 
     }
   }, []);
 
+  const onHostToolCallRef = useRef(onHostToolCall);
+  useEffect(() => { onHostToolCallRef.current = onHostToolCall; }, [onHostToolCall]);
+
   useEffect(() => {
     // Live running status and session-list invalidations arrive via SSE; the
     // sidebar never has to poll while an agent is working.
@@ -295,6 +300,9 @@ export const SessionSidebar = memo(function SessionSidebar({ selectedSessionId, 
         } else if (data.type === "sessions-changed") {
           if (data.refreshSessionList) scheduleRefresh();
           publishSessionsChanged(data.sessionIds ?? []);
+        } else if (data.type === "host_tool_call") {
+          const call = data as unknown as CrossSessionHostToolCall;
+          if (call.sessionId && call.id && call.toolName) onHostToolCallRef.current?.(call);
         }
       } catch {
         // ignore malformed frames

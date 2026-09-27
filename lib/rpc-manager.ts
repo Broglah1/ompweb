@@ -23,7 +23,7 @@ import type {
   SessionStatsInfo,
   WebSessionState,
 } from "./pi-types";
-import type { AgentMessage, ExitedRpcSession, ExtensionWidgetItem, ProjectLaunchConfig } from "./types";
+import type { AgentMessage, CrossSessionHostToolCall, ExitedRpcSession, ExtensionWidgetItem, ProjectLaunchConfig } from "./types";
 import type { SessionLiveSnapshot, SessionLiveToolEvent, SessionStreamCursor } from "./session-sync";
 
 // ============================================================================
@@ -539,14 +539,28 @@ export class AgentSessionWrapper {
         const id = typeof event.id === "string" ? event.id : "";
         const toolName = typeof event.toolName === "string" ? event.toolName : "";
         // Route REGISTERED host tools to an attached UI (the browser answers
-        // via host_tool_result); unregistered tools or no attached listener
-        // are rejected immediately so the agent never hangs on a tool nobody
-        // will answer.
-        if (id && toolName && this.hostToolNames.has(toolName) && this.listeners.length > 0) {
-          this.pendingHostTools.set(id, event);
-          this.emit(event);
-          notifyRunningChange();
-          return;
+        // via host_tool_result). With no tab on this session, hand the call to
+        // any open omp-web tab (the user switched sessions mid-run). Otherwise
+        // reject immediately so the agent never hangs on a tool nobody will
+        // answer.
+        if (id && toolName && this.hostToolNames.has(toolName)) {
+          if (this.listeners.length > 0) {
+            this.pendingHostTools.set(id, event);
+            this.emit(event);
+            notifyRunningChange();
+            return;
+          }
+          const otherTabs = getHostToolListeners();
+          if (otherTabs.size > 0) {
+            this.pendingHostTools.set(id, { ...event, webCrossSession: true });
+            const args = event.arguments && typeof event.arguments === "object" ? event.arguments as Record<string, unknown> : {};
+            const call: CrossSessionHostToolCall = { sessionId: this.sessionId, id, toolName, arguments: args };
+            for (const listener of otherTabs) {
+              try { listener(call); } catch { /* ignore listener errors */ }
+            }
+            notifyRunningChange();
+            return;
+          }
         }
         // Unregistered tool / no listener: reject (emits a notice) and do NOT
         // re-emit the frame — the UI must not answer a call nobody routed.
@@ -695,9 +709,15 @@ export class AgentSessionWrapper {
     this.emit({ type: "notice", level: "warning", message: `Rejected unavailable host tool: ${toolName}` });
   }
 
-  /** Reject every outstanding host tool call (browser disconnected / destroy). */
-  private rejectPendingHostTools(message: string): void {
-    for (const id of this.pendingHostTools.keys()) {
+  /**
+   * Reject outstanding host tool calls (browser disconnected / destroy): "own" ones went to this session's
+   * stream, "cross" ones to other open tabs (see subscribeHostToolCalls).
+   */
+  private rejectPendingHostTools(message: string, which: "all" | "own" | "cross" = "all"): void {
+    for (const [id, event] of this.pendingHostTools) {
+      const cross = event.webCrossSession === true;
+      if ((which === "own" && cross) || (which === "cross" && !cross)) continue;
+      this.pendingHostTools.delete(id);
       this.proc.sendFrame({
         type: "host_tool_result",
         id,
@@ -705,7 +725,11 @@ export class AgentSessionWrapper {
         result: { content: [{ type: "text", text: message }] },
       });
     }
-    this.pendingHostTools.clear();
+  }
+
+  /** The last other tab left: settle calls routed to other tabs. */
+  rejectCrossSessionHostTools(): void {
+    this.rejectPendingHostTools("The web UI disconnected while the agent was waiting for this host tool", "cross");
   }
 
   /** Reject every outstanding host URI request (browser disconnected / destroy). */
@@ -862,7 +886,7 @@ export class AgentSessionWrapper {
       // No UI attached anymore: reject outstanding host tool calls so the
       // agent never waits forever on a tool nobody will answer.
       if (this.listeners.length === 0) {
-        this.rejectPendingHostTools("The web UI disconnected while the agent was waiting for this host tool");
+        this.rejectPendingHostTools("The web UI disconnected while the agent was waiting for this host tool", "own");
         this.rejectPendingHostUris("The web UI disconnected while the agent was waiting for this URI request");
       }
     };
@@ -1499,6 +1523,7 @@ declare global {
   var __ompSessions: Map<string, AgentSessionWrapper> | undefined;
   var __ompStartLocks: Map<string, Promise<{ session: AgentSessionWrapper; realSessionId: string }>> | undefined;
   var __ompRunningListeners: Set<(update: RunningSessionUpdate) => void> | undefined;
+  var __ompHostToolListeners: Set<(call: CrossSessionHostToolCall) => void> | undefined;
   var __ompExitedSessions: Map<string, ExitedRpcSession> | undefined;
 }
 
@@ -1584,6 +1609,30 @@ export function subscribeRunningSessions(listener: (update: RunningSessionUpdate
   const listeners = getRunningListeners();
   listeners.add(listener);
   return () => { listeners.delete(listener); };
+}
+
+// ----------------------------------------------------------------------------
+// Cross-session host tool calls
+//
+// A registered host tool called while no tab watches its session goes to every
+// open omp-web tab (over the running-sessions SSE) instead of being rejected.
+// ----------------------------------------------------------------------------
+
+function getHostToolListeners(): Set<(call: CrossSessionHostToolCall) => void> {
+  if (!globalThis.__ompHostToolListeners) globalThis.__ompHostToolListeners = new Set();
+  return globalThis.__ompHostToolListeners;
+}
+
+/** Subscribe to host tool calls for sessions no tab is currently watching. */
+export function subscribeHostToolCalls(listener: (call: CrossSessionHostToolCall) => void): () => void {
+  const listeners = getHostToolListeners();
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+    if (listeners.size === 0) {
+      for (const session of getRegistry().values()) session.rejectCrossSessionHostTools();
+    }
+  };
 }
 
 // Starts at the empty state so an idle server never broadcasts "nothing changed".
