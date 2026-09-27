@@ -2,7 +2,7 @@
 
 import React, { useRef, useState, useCallback, useEffect, useLayoutEffect, useImperativeHandle, forwardRef, memo, KeyboardEvent } from "react";
 import { ChevronDown, ListChecks, Loader2, Mic, Paperclip, Plus, Shrink, Sparkles, Wrench, X, Zap } from "lucide-react";
-import { getSubmitDuringRunBehavior } from "@/lib/composer-prefs";
+import { getSubmitDuringRunBehavior, isWordCompletionEnabled } from "@/lib/composer-prefs";
 import type { BuiltinSlashCommandResult, CompactResultInfo, QueuedMessages, SlashCommandInfo } from "@/hooks/useAgentSession";
 import type { ActiveGoal, ActivePlan } from "@/lib/web-mode-state";
 import { toast } from "@/components/ui/toast";
@@ -271,10 +271,11 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
   onOpenProviders,
 }: Props, ref) {
   const isMobile = useIsMobile();
-  // Soft keyboards bring their own suggestions and have no Tab key.
+  // Read per render so a Settings change applies on the next keystroke.
+  const wordCompletionOn = isWordCompletionEnabled();
   const wordPrediction = useWordPrediction(
-    isMobile ? undefined : onPredictWord,
-    isMobile ? undefined : onPredictWordFeedback,
+    wordCompletionOn ? onPredictWord : undefined,
+    wordCompletionOn ? onPredictWordFeedback : undefined,
   );
   const ghostMirrorRef = useRef<HTMLDivElement>(null);
   const composerId = React.useId();

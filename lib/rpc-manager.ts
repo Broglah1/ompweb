@@ -113,9 +113,10 @@ const PASSTHROUGH_COMMANDS = new Set([
   "predict_word_feedback",
 ]);
 
-// Outlasts omp's own 30s budget for a cold prediction-daemon start, so omp's
-// answer (or error) decides; a wedged daemon still cannot pin the request forever.
-const PREDICT_WORD_TIMEOUT_MS = 40_000;
+// Outlasts omp's cold prediction-daemon start (up to 3 × 30s start rounds plus a
+// 30s first completion), so omp's answer or error decides; a wedged daemon still
+// cannot pin the request forever.
+const PREDICT_WORD_TIMEOUT_MS = 125_000;
 
 // Commands that can carry user-attached images to the model. All of them must
 // pass the same server-side per-image/count/aggregate validation before the

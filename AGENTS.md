@@ -341,7 +341,11 @@ handled or safely ignored.
   answers `{ suffix: null }` when no process is alive, so sessions that are not
   running show no ghost text until the first send.
 - Ghost text paints only when the caret ends its line (the mirror overlay would
-  otherwise overlap typed text). Disabled on the mobile breakpoint and for
+  otherwise overlap typed text). Settings → Interface & Behavior → Word
+  completion (`lib/composer-prefs.ts`, localStorage `omp-web:word-completion`):
+  Auto (default) enables it only when the primary pointer is fine
+  (`(pointer: fine)` — mouse/trackpad; browsers cannot detect an on-screen
+  keyboard), Enabled/Disabled force it. Also skipped for
   drafts past 20k chars (omp's prose-gate cap); an omp without `predict_word`
   ("Unknown command") pauses requests for a minute.
 - Ghost state lives in a small external store (`useSyncExternalStore` in

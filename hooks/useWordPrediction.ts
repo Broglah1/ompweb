@@ -63,13 +63,13 @@ export function useWordPrediction(predict: PredictWord | undefined, feedback: Pr
           if (advanced.typedPast) deps.current.feedback?.(ghost.text, ghost.cursor, ghost.suffix, false);
           carried = advanced.ghost;
         }
-        if (start !== end || !atLineEnd(text, start)) {
+        const { predict } = deps.current;
+        if (!predict || start !== end || !atLineEnd(text, start)) {
           set(null);
           return;
         }
         set(carried);
-        const { predict } = deps.current;
-        if (!predict || text.length > MAX_DRAFT_LENGTH || Date.now() < unsupportedUntil) return;
+        if (text.length > MAX_DRAFT_LENGTH || Date.now() < unsupportedUntil) return;
         timer = window.setTimeout(() => {
           predict(text, start).then(
             (suffix) => {
