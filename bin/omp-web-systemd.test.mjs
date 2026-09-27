@@ -202,7 +202,9 @@ test("install fails loudly when the omp launcher interpreter is missing", () => 
 
     const childEnv = {
       ...process.env,
-      PATH: [binDir, path.dirname(process.execPath)].join(path.delimiter),
+      // No node dir: the spawn uses an absolute process.execPath, and adding
+      // it breaks the premise when node and bun share a directory.
+      PATH: binDir,
       OMP_WEB_SYSTEMD_BIN: fakeOmpweb,
       OMP_WEB_OMP_BIN: path.join(binDir, "omp"),
       PORT: "40123",
