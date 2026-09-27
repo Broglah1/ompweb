@@ -17,8 +17,10 @@ All notable changes to **omp-web** (`@kahme247/ompweb`) are documented in this f
 ### Fixes & Improvements
 
 - Render Nerd Font icons that omp sends when its symbol preset is set to Nerd (for example the multi-select **Done selecting** check mark) instead of empty boxes. The bundled symbols font (Nerd Fonts Symbols Only, SIL OFL 1.1, about 1.2 MB) applies only to Private Use Area codepoints and is downloaded only when a page shows one of these icons.
+- Show late LSP diagnostic notices with their original line breaks, like async results, instead of collapsing them onto one line.
 - Unexpected omp process exits now remain visible in the workspace and session sidebar until that session starts again, including the exit code or signal and the last stderr line.
 - Show free-text answers to agent questions (the ask tool's "Other" option and other `promptStyle` editor requests) in the chat font instead of the monospace code font.
+- Keep line breaks in agent dialog titles instead of running multi-line titles together on one line.
 - Restore the Settings toggle track, which the 44px hit area had squeezed into a dot. Cap Settings dropdowns at half the card width with an ellipsis for long options, and stack them below their label at full card width on narrow screens.
 - Improve phone and tablet ergonomics with safe-area-aware top chrome, a focus-trapped mobile workspace drawer, an actionable first-run workspace state, touch-sized sidebar actions, narrow-screen composer wrapping, clearer settings loading/retry states, and quieter streaming announcements.
 - Keep the Extensions & Tools settings panel scrollable on desktop and touch layouts, including long MCP server lists.

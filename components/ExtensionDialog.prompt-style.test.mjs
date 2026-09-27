@@ -32,3 +32,11 @@ test("plain editor requests keep the monospace code font", () => {
   assert.match(textarea, /font-family:var\(--font-mono\)/);
   assert.match(textarea, /font-size:13px/);
 });
+
+test("multi-line titles keep their line breaks", () => {
+  const html = renderToStaticMarkup(React.createElement(ExtensionDialog, {
+    request: { type: "extension_ui_request", id: "r2", method: "input", title: "Question\n\nDetails" },
+    onRespond: () => {},
+  }));
+  assert.match(html, /<div style="[^"]*white-space:pre-wrap[^"]*">Question\n\nDetails<\/div>/);
+});
