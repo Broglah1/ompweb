@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useSyncExternalStore } from "react";
+import type { ExitedRpcSession } from "@/lib/types";
 import en from "./locales/en.json";
 import ja from "./locales/ja.json";
 import zhCN from "./locales/zh-CN.json";
@@ -89,6 +90,18 @@ export function translate(key: string, vars?: Record<string, string | number>): 
   return template.replace(/\{(\w+)\}/g, (match, name: string) =>
     name in vars ? String(vars[name]) : match,
   );
+}
+
+/** Localized user-facing explanation for a retained unexpected process exit. */
+export function formatExitedSessionNotice(exit: ExitedRpcSession): string {
+  const status = exit.signal
+    ? translate("sessionSidebar.exitSignal", { signal: exit.signal })
+    : translate("sessionSidebar.exitCode", {
+        code: exit.code ?? translate("sessionSidebar.exitUnknown"),
+      });
+  return translate("sessionSidebar.agentExited", {
+    reason: exit.detail ? `${status}: ${exit.detail}` : status,
+  });
 }
 
 /** Plural-aware translate: resolves `<key>.one` for count===1, `<key>.other`

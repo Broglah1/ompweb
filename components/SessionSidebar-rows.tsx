@@ -1,8 +1,8 @@
 "use client";
 
 import { memo, useCallback, useRef, useState, type Dispatch, type ReactNode, type RefObject, type SetStateAction } from "react";
-import type { AgentMessage, ManagedProject, ProjectLaunchConfig, SessionInfo } from "@/lib/types";
-import { useI18n } from "@/lib/i18n";
+import type { AgentMessage, ExitedRpcSession, ManagedProject, ProjectLaunchConfig, SessionInfo } from "@/lib/types";
+import { formatExitedSessionNotice, useI18n } from "@/lib/i18n";
 import { comparableProjectPath } from "@/lib/comparable-path";
 import { Check, ChevronDown, ChevronRight, Folder, GitBranch, MoreHorizontal, Plus, Trash2 } from "lucide-react";
 import { Tooltip } from "./ui/primitives";
@@ -20,6 +20,7 @@ import {
 } from "./SessionSidebar-helpers";
 import {
   PathLabel,
+  ExitedSessionIndicator,
   RunningSessionIndicator,
   SIDEBAR_BUTTON_TRANSITION,
   SidebarPortalMenu,
@@ -39,13 +40,14 @@ interface ProjectRowProps {
   project: ManagedProject;
   isActive: boolean;
   isExpanded: boolean;
-  activity: { running: number; unread: number } | undefined;
+  activity: { running: number; unread: number; exited: number } | undefined;
   tree: SessionTreeNode[];
   /** Sessions beyond the cap (0 when a filter is active — show all matches). */
   hiddenCount: number;
   selectedSessionId: string | null;
   runningSessionIds: Set<string>;
   unreadSessionIds: Set<string>;
+  exitedSessions: Map<string, ExitedRpcSession>;
   relativeTimeNow: number;
   onActivate: (path: string) => void;
   onToggleExpand: (path: string) => void;
@@ -83,6 +85,7 @@ function ProjectRow({
   selectedSessionId,
   runningSessionIds,
   unreadSessionIds,
+  exitedSessions,
   relativeTimeNow,
   onActivate,
   onToggleExpand,
@@ -132,7 +135,7 @@ function ProjectRow({
     void onUpdatePresentation(project.path, { alias });
   }, [aliasValue, project.alias, project.path, onUpdatePresentation]);
   const label = project.alias ?? projectLabel(project.path);
-  const hasActivity = Boolean(activity && (activity.running > 0 || activity.unread > 0));
+  const hasActivity = Boolean(activity && (activity.running > 0 || activity.unread > 0 || activity.exited > 0));
   const visibleRoots = hiddenCount > 0 && !showAllSessions
     ? tree.slice(0, MAX_PROJECT_SESSIONS)
     : tree;
@@ -316,24 +319,23 @@ function ProjectRow({
         <div style={{ flex: 1 }} />
         {hasActivity && (
           <span
-            aria-label={t("projects.activity", { running: activity?.running ?? 0, unread: activity?.unread ?? 0 })}
-            title={t("projects.activity", { running: activity?.running ?? 0, unread: activity?.unread ?? 0 })}
+            aria-label={t("projects.activity", { running: activity?.running ?? 0, unread: activity?.unread ?? 0, exited: activity?.exited ?? 0 })}
+            title={t("projects.activity", { running: activity?.running ?? 0, unread: activity?.unread ?? 0, exited: activity?.exited ?? 0 })}
             className="sidebar-project-activity"
             data-running={(activity?.running ?? 0) > 0 ? "true" : "false"}
             role="status"
             aria-live="polite"
             style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: SIDEBAR_STATUS_SLOT, height: SIDEBAR_STATUS_SLOT, flexShrink: 0, lineHeight: 0 }}
           >
-            <span
-              aria-hidden="true"
-              className="sidebar-project-activity-dot"
-              style={{
-                width: 7,
-                height: 7,
-                borderRadius: "50%",
-                background: "var(--accent)",
-              }}
-            />
+            {(activity?.exited ?? 0) > 0 ? (
+              <ExitedSessionIndicator title={t("projects.exited", { count: activity?.exited ?? 0 })} size={11} />
+            ) : (
+              <span
+                aria-hidden="true"
+                className="sidebar-project-activity-dot"
+                style={{ width: 7, height: 7, borderRadius: "50%", background: "var(--accent)" }}
+              />
+            )}
           </span>
         )}
         <div
@@ -421,6 +423,7 @@ function ProjectRow({
                   selectedSessionId={selectedSessionId}
                   runningSessionIds={runningSessionIds}
                   unreadSessionIds={unreadSessionIds}
+                  exitedSessions={exitedSessions}
                   relativeTimeNow={relativeTimeNow}
                   onSelectSession={onSelectSession}
                   onRenamed={onRenamed}
@@ -725,6 +728,7 @@ const SessionTreeItem = memo(function SessionTreeItem({
   selectedSessionId,
   runningSessionIds,
   unreadSessionIds,
+  exitedSessions,
   relativeTimeNow,
   onSelectSession,
   onRenamed,
@@ -735,6 +739,7 @@ const SessionTreeItem = memo(function SessionTreeItem({
   selectedSessionId: string | null;
   runningSessionIds: Set<string>;
   unreadSessionIds: Set<string>;
+  exitedSessions: Map<string, ExitedRpcSession>;
   relativeTimeNow: number;
   onSelectSession: (s: SessionInfo) => void;
   onRenamed?: () => void;
@@ -750,6 +755,7 @@ const SessionTreeItem = memo(function SessionTreeItem({
   const isSelected = sessionId === selectedSessionId;
   const isRunning = runningSessionIds.has(sessionId);
   const isUnread = unreadSessionIds.has(sessionId);
+  const exited = exitedSessions.get(sessionId);
 
   // Stable callbacks: depend only on primitives / stable parent callbacks so
   // SessionItem's React.memo stays effective across re-renders.
@@ -782,6 +788,7 @@ const SessionTreeItem = memo(function SessionTreeItem({
           isSelected={isSelected}
           isRunning={isRunning}
           isUnread={isUnread}
+          exited={exited}
           relativeTimeNow={relativeTimeNow}
           onClick={handleClick}
           onRenamed={onRenamed}
@@ -801,6 +808,7 @@ const SessionTreeItem = memo(function SessionTreeItem({
               selectedSessionId={selectedSessionId}
               runningSessionIds={runningSessionIds}
               unreadSessionIds={unreadSessionIds}
+              exitedSessions={exitedSessions}
               relativeTimeNow={relativeTimeNow}
               onSelectSession={onSelectSession}
               onRenamed={onRenamed}
@@ -828,6 +836,7 @@ const SessionTreeItem = memo(function SessionTreeItem({
     const id = prev.node.session.id;
     if (prev.unreadSessionIds.has(id) !== next.unreadSessionIds.has(id)) return false;
   }
+  if (prev.exitedSessions !== next.exitedSessions) return false;
   if (prev.relativeTimeNow !== next.relativeTimeNow) return false;
   if (prev.onSelectSession !== next.onSelectSession
     || prev.onRenamed !== next.onRenamed
@@ -839,6 +848,7 @@ const SessionItem = memo(function SessionItem({
   isSelected,
   isRunning,
   isUnread,
+  exited,
   onClick,
   onRenamed,
   onDeleted,
@@ -852,6 +862,7 @@ const SessionItem = memo(function SessionItem({
   isSelected: boolean;
   isRunning?: boolean;
   isUnread?: boolean;
+  exited?: ExitedRpcSession;
   onClick: () => void;
   onRenamed?: () => void;
   onDeleted?: (id: string) => void;
@@ -862,6 +873,7 @@ const SessionItem = memo(function SessionItem({
   onToggleCollapse?: () => void;
 }) {
   const { t, locale } = useI18n();
+  const exitTitle = exited ? formatExitedSessionNotice(exited) : "";
   const [hovered, setHovered] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState("");
@@ -1012,9 +1024,13 @@ const SessionItem = memo(function SessionItem({
           {session.worktreeBranch && <span title={t("sessionSidebar.worktreeTitle", { path: session.cwd })} style={{ display: "flex", alignItems: "center", gap: 3, maxWidth: 56, minWidth: 0, overflow: "hidden", color: "var(--text-dim)", fontSize: 10, flexShrink: 1 }}><GitBranch size={10} strokeWidth={2.4} aria-hidden="true" /><span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{session.worktreeBranch}</span></span>}
           {hasChildren && <button className="session-item-icon-button" onClick={(event) => { event.stopPropagation(); onToggleCollapse?.(); }} title={collapsed ? t("sessionSidebar.expandForks") : t("sessionSidebar.collapseForks")} aria-label={collapsed ? t("sessionSidebar.expandForks") : t("sessionSidebar.collapseForks")} aria-expanded={!collapsed} style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 24, height: 24, padding: 0, flexShrink: 0, border: "none", background: "none", color: "var(--text-dim)", cursor: "pointer", transform: collapsed ? "rotate(-90deg)" : "none", transition: "transform var(--dur-fast) var(--ease-out-warm)" }}><ChevronDown size={12} strokeWidth={1.8} aria-hidden="true" /></button>}
           <div style={{ display: "flex", alignItems: "center", gap: SIDEBAR_STATUS_GAP, flexShrink: 0 }}>
-            {(isRunning || isUnread) && (
+            {(isRunning || exited || isUnread) && (
               <span style={{ display: "flex", alignItems: "center", justifyContent: "center", width: SIDEBAR_STATUS_SLOT, height: SIDEBAR_STATUS_SLOT, flexShrink: 0 }}>
-                {isRunning ? <RunningSessionIndicator size={12} /> : <UnreadSessionIndicator size={11} />}
+                {isRunning
+                  ? <RunningSessionIndicator size={12} />
+                  : exited
+                    ? <ExitedSessionIndicator title={exitTitle} size={12} />
+                    : <UnreadSessionIndicator size={11} />}
               </span>
             )}
             <div className="session-item-trailing" style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", flexShrink: 0 }}>

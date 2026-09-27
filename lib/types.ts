@@ -484,3 +484,14 @@ export interface SessionContext {
   /** Latest persisted todo snapshot on the selected session branch. */
   todoPhases: TodoPhase[];
 }
+
+/** An omp child that exited unexpectedly; retained until that session starts again. */
+export interface ExitedRpcSession {
+  id: string;
+  cwd: string;
+  at: number;
+  code: number | null;
+  signal: string | null;
+  /** Last stderr line, if any. */
+  detail: string;
+}

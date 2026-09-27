@@ -4,6 +4,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProp
 import { createPortal } from "react-dom";
 import { useI18n } from "@/lib/i18n";
 import { usePrefersReducedMotion } from "@/hooks/usePrefersReducedMotion";
+import { AlertTriangle } from "lucide-react";
 import OmpWebLogo from "./OmpWebLogo";
 /**
  * Path label that ellipsizes on the LEFT, keeping the (most relevant) trailing
@@ -383,6 +384,26 @@ function RunningSessionIndicator({ size = 14 }: { size?: number }) {
     </span>
   );
 }
+function ExitedSessionIndicator({ title, size = 14 }: { title: string; size?: number }) {
+  return (
+    <span
+      title={title}
+      aria-label={title}
+      style={{
+        width: size,
+        height: size,
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        flexShrink: 0,
+        color: "var(--status-error)",
+      }}
+    >
+      <AlertTriangle size={size} strokeWidth={2.2} aria-hidden="true" />
+    </span>
+  );
+}
+
 function UnreadSessionIndicator({ size = 14 }: { size?: number }) {
   const { t } = useI18n();
   const reducedMotion = usePrefersReducedMotion();
@@ -415,6 +436,7 @@ function UnreadSessionIndicator({ size = 14 }: { size?: number }) {
 export {
   OmpWebTitle,
   PathLabel,
+  ExitedSessionIndicator,
   RunningSessionIndicator,
   SIDEBAR_BUTTON_TRANSITION,
   SidebarIconButton,

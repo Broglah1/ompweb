@@ -23,7 +23,7 @@ import type {
   SessionStatsInfo,
   WebSessionState,
 } from "./pi-types";
-import type { AgentMessage, ExtensionWidgetItem, ProjectLaunchConfig } from "./types";
+import type { AgentMessage, ExitedRpcSession, ExtensionWidgetItem, ProjectLaunchConfig } from "./types";
 import type { SessionLiveSnapshot, SessionLiveToolEvent, SessionStreamCursor } from "./session-sync";
 
 // ============================================================================
@@ -280,6 +280,8 @@ export class AgentSessionWrapper {
   private _sessionFile = "";
   private _sessionName: string | undefined;
   private proc: RpcProcess;
+  /** Process whose exit is expected because reload is deliberately disposing it. */
+  private expectedExitProc: RpcProcess | null = null;
   readonly cwd: string;
   /** Whether the child was spawned with --advisor. The flag is spawn-time
    * only (no runtime RPC toggles it), so applying a changed advisor setting
@@ -292,11 +294,12 @@ export class AgentSessionWrapper {
 
   // Plain field assignments (not TS parameter properties) keep this module
   // runnable under Node's strip-only TypeScript mode for probes/tests.
-  constructor(proc: RpcProcess, cwd: string, recordedCwd?: string | null, advisorSpawned = false) {
+  constructor(proc: RpcProcess, cwd: string, recordedCwd?: string | null, advisorSpawned = false, expectedSessionId = "") {
     this.proc = proc;
     this.cwd = cwd;
     this.recordedCwd = recordedCwd ?? null;
     this.advisorSpawned = advisorSpawned;
+    this._sessionId = expectedSessionId;
   }
 
   get sessionId(): string {
@@ -395,14 +398,20 @@ export class AgentSessionWrapper {
     if (this._sessionFile) cacheSessionPath(this._sessionId, this._sessionFile);
   }
 
-  handleProcessExit(stderrTail: string): void {
-    // A restart disposes the old child on purpose — not a crash.
-    if (!this._alive || this.restarting) return;
-    const detail = stderrTail.trim().split("\n").pop() ?? "";
+  handleProcessExit(
+    { code, signal, stderrTail }: { code: number | null; signal: NodeJS.Signals | null; stderrTail: string },
+    sourceProc: RpcProcess = this.proc,
+  ): void {
+    if (!this._alive || sourceProc === this.expectedExitProc) return;
+    const detail = (stderrTail.trim().split("\n").pop() ?? "").slice(-500);
+    const status = signal ? `signal ${signal}` : `code ${code ?? "null"}`;
+    // Recorded before destroy(): its running-change broadcast must carry the
+    // record so sidebars that missed the notice below still see the exit.
+    if (this._sessionId) getExitedMap().set(this._sessionId, { id: this._sessionId, cwd: this.cwd, at: Date.now(), code, signal, detail });
     this.emit({
       type: "notice",
       level: "error",
-      message: `The omp process for this session exited unexpectedly${detail ? `: ${detail}` : "."}`,
+      message: `The omp process for this session exited unexpectedly (${status})${detail ? `: ${detail}` : "."}`,
     });
     // Terminal agent_end so a client mid-stream stops spinning immediately
     // instead of waiting for the reconcile poll.
@@ -1053,7 +1062,12 @@ export class AgentSessionWrapper {
     this.compacting = false;
     this.unsubscribeFrames?.();
     try {
-      await old.dispose();
+      this.expectedExitProc = old;
+      try {
+        await old.dispose();
+      } finally {
+        if (this.expectedExitProc === old) this.expectedExitProc = null;
+      }
       if (!this._alive) return;
 
       this.extensionStatuses.clear();
@@ -1070,8 +1084,8 @@ export class AgentSessionWrapper {
       const proc = new RpcProcess({
         cwd: this.cwd,
         extraArgs: buildSessionSpawnArgs(resumable ? sessionFile : "", undefined, this.advisorSpawned, launchConfigForCwd(this.cwd)),
-        onExit: ({ stderrTail }) => {
-          if (this.proc === proc) this.handleProcessExit(stderrTail);
+        onExit: (info) => {
+          if (this.proc === proc) this.handleProcessExit(info, proc);
         },
       });
       this.proc = proc;
@@ -1466,13 +1480,36 @@ export interface RunningRpcSession {
 export interface RunningSessionUpdate {
   ids: string[];
   runningSessions: RunningRpcSession[];
+  exitedSessions: ExitedRpcSession[];
   refreshSessionList: boolean;
 }
+
 
 declare global {
   var __ompSessions: Map<string, AgentSessionWrapper> | undefined;
   var __ompStartLocks: Map<string, Promise<{ session: AgentSessionWrapper; realSessionId: string }>> | undefined;
   var __ompRunningListeners: Set<(update: RunningSessionUpdate) => void> | undefined;
+  var __ompExitedSessions: Map<string, ExitedRpcSession> | undefined;
+}
+
+function getExitedMap(): Map<string, ExitedRpcSession> {
+  if (!globalThis.__ompExitedSessions) globalThis.__ompExitedSessions = new Map();
+  return globalThis.__ompExitedSessions;
+}
+
+export function getExitedRpcSessions(): ExitedRpcSession[] {
+  return [...getExitedMap().values()];
+}
+
+export function getExitedRpcSession(sessionId: string): ExitedRpcSession | undefined {
+  return getExitedMap().get(sessionId);
+}
+
+/** Clear the visible crash state once a replacement child is ready. */
+export function clearExitedRpcSession(sessionId: string): boolean {
+  const cleared = getExitedMap().delete(sessionId);
+  if (cleared) notifyRunningChange();
+  return cleared;
 }
 
 function getRegistry(): Map<string, AgentSessionWrapper> {
@@ -1539,7 +1576,8 @@ export function subscribeRunningSessions(listener: (update: RunningSessionUpdate
   return () => { listeners.delete(listener); };
 }
 
-let lastRunningSnapshot = "";
+// Starts at the empty state so an idle server never broadcasts "nothing changed".
+let lastRunningSnapshot = "[[],[]]";
 
 /**
  * Recompute the running-session-id set and, when it changes, broadcast it.
@@ -1548,12 +1586,13 @@ let lastRunningSnapshot = "";
  */
 export function notifyRunningChange({ refreshSessionList = false }: { refreshSessionList?: boolean } = {}): void {
   const runningSessions = getRunningRpcSessions();
+  const exitedSessions = getExitedRpcSessions();
   const ids = runningSessions.map((s) => s.id);
-  if (runningSessions.length === 0 && lastRunningSnapshot === "[]" && !refreshSessionList) return;
-  const snapshot = JSON.stringify(runningSessions.slice().sort((a, b) => a.id.localeCompare(b.id)));
+  const byId = (a: { id: string }, b: { id: string }) => a.id.localeCompare(b.id);
+  const snapshot = JSON.stringify([runningSessions.slice().sort(byId), exitedSessions.slice().sort(byId)]);
   if (snapshot === lastRunningSnapshot && !refreshSessionList) return;
   lastRunningSnapshot = snapshot;
-  const update: RunningSessionUpdate = { ids, runningSessions, refreshSessionList };
+  const update: RunningSessionUpdate = { ids, runningSessions, exitedSessions, refreshSessionList };
   for (const listener of getRunningListeners()) {
     try { listener(update); } catch { /* ignore listener errors */ }
   }
@@ -1627,9 +1666,15 @@ export async function startRpcSession(
     const proc = new RpcProcess({
       cwd,
       extraArgs: buildSessionSpawnArgs(sessionFile, toolNames, advisor === true, launchConfig),
-      onExit: ({ stderrTail }) => holder.wrapper?.handleProcessExit(stderrTail),
+      onExit: (info) => holder.wrapper?.handleProcessExit(info, proc),
     });
-    const created = new AgentSessionWrapper(proc, cwd, recordedCwd, advisor === true || launchConfig?.advisor === true);
+    const created = new AgentSessionWrapper(
+      proc,
+      cwd,
+      recordedCwd,
+      advisor === true || launchConfig?.advisor === true,
+      sessionFile ? sessionId : "",
+    );
     holder.wrapper = created;
     created.start();
     try {
@@ -1663,6 +1708,9 @@ export async function startRpcSession(
       registry.set(newId, created);
     });
     registry.set(realSessionId, created);
+    // A successful respawn supersedes the crash record.
+    clearExitedRpcSession(sessionId);
+    if (realSessionId !== sessionId) clearExitedRpcSession(realSessionId);
     return { session: created, realSessionId };
   })().finally(() => locks.delete(sessionId));
 
