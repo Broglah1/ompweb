@@ -11,7 +11,10 @@ import {
   invalidateSessionEntriesCache,
   invalidateSessionListCache,
   invalidateSessionListMeta,
+  readSessionHeader,
+  resolveSessionPath,
 } from "./session-reader";
+import { markShuttingDown, recordRunningSessions, RESUME_PROMPT, takeInterruptedSessions } from "./session-resume";
 import { PRESET_FULL } from "./tool-presets";
 import { comparableProjectPath } from "./comparable-path";
 import { isRecord } from "./type-guards";
@@ -1572,7 +1575,11 @@ export function clearExitedRpcSession(sessionId: string): boolean {
 function getRegistry(): Map<string, AgentSessionWrapper> {
   if (!globalThis.__ompSessions) {
     globalThis.__ompSessions = new Map();
-    const cleanup = () => globalThis.__ompSessions?.forEach((s) => s.destroy());
+    const cleanup = () => {
+      // Children dying from here on are the shutdown, not finished runs.
+      markShuttingDown();
+      globalThis.__ompSessions?.forEach((s) => s.destroy());
+    };
     process.once("exit", cleanup);
     process.once("SIGINT", cleanup);
     process.once("SIGTERM", cleanup);
@@ -1673,10 +1680,41 @@ export function notifyRunningChange({ refreshSessionList = false }: { refreshSes
   const snapshot = JSON.stringify([runningSessions.slice().sort(byId), exitedSessions.slice().sort(byId)]);
   if (snapshot === lastRunningSnapshot && !refreshSessionList) return;
   lastRunningSnapshot = snapshot;
+  syncInterruptibleSessions();
   const update: RunningSessionUpdate = { ids, runningSessions, exitedSessions, refreshSessionList };
   for (const listener of getRunningListeners()) {
     try { listener(update); } catch { /* ignore listener errors */ }
   }
+}
+
+/** Record which sessions are mid-run, for resume after a restart. */
+export function syncInterruptibleSessions(): void {
+  const registry = getRegistry();
+  const running = new Map<string, { id: string; advisor: boolean }>();
+  for (const session of registry.values()) {
+    if (session.sessionId && session.isRunning()) running.set(session.sessionId, { id: session.sessionId, advisor: session.advisorSpawned });
+  }
+  recordRunningSessions([...running.values()], (id) => registry.get(id)?.isAlive() === true);
+}
+
+/**
+ * Restart the sessions that were mid-run when omp-web last stopped and ask
+ * each to continue. Only runs when the auto-resume setting is on.
+ */
+export async function resumeInterruptedSessions(): Promise<void> {
+  await Promise.all(takeInterruptedSessions().map(async ({ id, advisor }) => {
+    try {
+      const filePath = await resolveSessionPath(id);
+      if (!filePath) return;
+      const header = readSessionHeader(filePath);
+      const { cwd } = resolveSpawnCwdResult(header?.cwd);
+      const { session } = await startRpcSession(id, filePath, cwd, undefined, advisor, header?.cwd);
+      await session.send({ type: "prompt", message: RESUME_PROMPT });
+      console.log(`[omp-web] resumed interrupted session ${id}`);
+    } catch (error) {
+      console.warn(`[omp-web] could not resume session ${id}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }));
 }
 
 /** Look up the workspace-registered launch config; unregistered projects attach none. */
