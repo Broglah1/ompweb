@@ -286,6 +286,65 @@ export function isSafeOpenUrl(raw: unknown): boolean {
   return scheme === "http" || scheme === "https" || scheme === "mailto";
 }
 
+export interface HostToolHandlers {
+  /** Open a validated URL; returns the result text reported to the agent. */
+  openUrl: (url: string) => string;
+  /** Open a file tab; may return the result text reported to the agent. */
+  openFile?: (path: string, name: string) => string | void;
+}
+
+/**
+ * Execute an omp-web host tool (open_url / notify / open_file) and return the
+ * toolResult text. Shared by the session's own stream and by tabs answering
+ * calls for a session they are not viewing.
+ */
+export async function runHostTool(
+  toolName: string,
+  args: Record<string, unknown>,
+  handlers: HostToolHandlers,
+): Promise<{ text: string; isError: boolean }> {
+  const str = (value: unknown): string | undefined => (typeof value === "string" ? value : undefined);
+  switch (toolName) {
+    case "open_url": {
+      const raw = str(args.url) ?? "";
+      if (!isSafeOpenUrl(raw)) return { text: "Unsafe or invalid URL not opened", isError: !!raw };
+      return { text: handlers.openUrl(raw), isError: false };
+    }
+    case "notify": {
+      const title = str(args.title) ?? "OMP";
+      const message = str(args.message) ?? "";
+      if (typeof Notification !== "undefined") {
+        try {
+          if (Notification.permission === "granted") {
+            new Notification(title, { body: message });
+          } else if (Notification.permission === "default") {
+            const permission = await Notification.requestPermission();
+            if (permission === "granted") new Notification(title, { body: message });
+          }
+        } catch {
+          // Notification API blocked — the result still succeeds.
+        }
+      }
+      return { text: "Notification shown", isError: false };
+    }
+    case "open_file": {
+      const path = str(args.path) ?? "";
+      if (!path) return { text: "No path provided", isError: true };
+      let text: string | void = undefined;
+      if (handlers.openFile) {
+        try {
+          text = handlers.openFile(path, path.split(/[\\/]/).pop() || path);
+        } catch {
+          // ignore navigation failures
+        }
+      }
+      return { text: text || `Opened ${path}`, isError: false };
+    }
+    default:
+      return { text: `Host tool "${toolName}" is not available in omp-web`, isError: true };
+  }
+}
+
 export function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }

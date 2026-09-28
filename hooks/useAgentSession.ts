@@ -86,6 +86,7 @@ import {
   historyEntryToSubagentInfo,
   isQuotaLikeError,
   isSafeOpenUrl,
+  runHostTool,
   normalizeThinkingLevel,
   pruneSubagentIdMap,
   readCompactResult,
@@ -179,13 +180,15 @@ export interface UseAgentSessionOptions {
   setToolPreset?: (preset: "none" | "default" | "full") => void;
   /** Opens a file in the web UI's file viewer (used by the open_file host tool). */
   onOpenFile?: (filePath: string, name: string, sessionId?: string) => void;
+  /** Handles the open_url host tool (may ask the user first); returns the result text. */
+  onOpenUrl?: (url: string) => string;
 }
 
 export function useAgentSession(opts: UseAgentSessionOptions) {
   const {
     session, newSessionCwd, onAgentEnd, onSessionCreated, onSessionForked,
     modelsRefreshKey, onBranchDataChange, onSystemPromptChange, onSystemPromptLoaderChange, onSessionStatsPanelOpen,
-    onOpenFile,
+    onOpenFile, onOpenUrl,
   } = opts;
   const reducedMotion = usePrefersReducedMotion();
   const isNew = session === null && newSessionCwd !== null;
@@ -1226,55 +1229,15 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const handleHostToolCall = useCallback(async (id: string, toolName: string, args: Record<string, unknown>) => {
     const sid = sessionIdRef.current;
     if (!sid) return;
-    const str = (value: unknown): string | undefined => (typeof value === "string" ? value : undefined);
-    switch (toolName) {
-      case "open_url": {
-        const raw = typeof args.url === "string" ? args.url : "";
-        const safe = isSafeOpenUrl(raw);
-        const url = safe ? raw : "";
-        if (url && typeof window !== "undefined") {
-          const opened = window.open(url, "_blank", "noopener,noreferrer");
-          opened?.focus?.();
-        }
-        const message = safe ? (raw ? `Opened ${raw}` : "No URL provided") : "Unsafe or invalid URL not opened";
-        await respondHostTool(sid, id, message, !safe && !!raw);
-        break;
-      }
-      case "notify": {
-        const title = str(args.title) ?? "OMP";
-        const message = str(args.message) ?? "";
-        if (typeof Notification !== "undefined") {
-          try {
-            if (Notification.permission === "granted") {
-              new Notification(title, { body: message });
-            } else if (Notification.permission === "default") {
-              const permission = await Notification.requestPermission();
-              if (permission === "granted") new Notification(title, { body: message });
-            }
-          } catch {
-            // Notification API blocked — the result still succeeds.
-          }
-        }
-        await respondHostTool(sid, id, "Notification shown");
-        break;
-      }
-      case "open_file": {
-        const path = str(args.path) ?? "";
-        if (path && onOpenFile) {
-          try {
-            const name = path.split(/[\\/]/).pop() || path;
-            onOpenFile(path, name, sid);
-          } catch {
-            // ignore navigation failures
-          }
-        }
-        await respondHostTool(sid, id, path ? `Opened ${path}` : "No path provided", !path);
-        break;
-      }
-      default:
-        await respondHostTool(sid, id, `Host tool \"${toolName}\" is not available in omp-web`, true);
-    }
-  }, [onOpenFile, respondHostTool]);
+    const { text, isError } = await runHostTool(toolName, args, {
+      openUrl: onOpenUrl ?? ((url) => {
+        window.open(url, "_blank", "noopener,noreferrer")?.focus?.();
+        return `Opened ${url}`;
+      }),
+      openFile: onOpenFile ? (path, name) => onOpenFile(path, name, sid) : undefined,
+    });
+    await respondHostTool(sid, id, text, isError);
+  }, [onOpenFile, onOpenUrl, respondHostTool]);
 
   /** Answer a host_uri_request (agent read/write of a registered scheme). */
   const respondHostUri = useCallback(async (sid: string, id: string, frame: { content?: string; contentType?: "text/markdown" | "application/json" | "text/plain"; isError?: boolean; error?: string }) => {

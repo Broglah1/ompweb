@@ -486,6 +486,14 @@ export interface SessionContext {
 }
 
 /** An omp child that exited unexpectedly; retained until that session starts again. */
+/** A host tool call for a session no tab is watching, sent to every open tab. */
+export interface CrossSessionHostToolCall {
+  sessionId: string;
+  id: string;
+  toolName: string;
+  arguments: Record<string, unknown>;
+}
+
 export interface ExitedRpcSession {
   id: string;
   cwd: string;
