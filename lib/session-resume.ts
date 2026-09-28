@@ -1,0 +1,133 @@
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs";
+import { resolve } from "path";
+import { getAgentDir } from "./omp/paths";
+import { isRecord } from "./type-guards";
+import { loadWebServerSettings } from "./web-settings";
+
+/** Sent to each session that was mid-run when omp-web stopped. */
+export const RESUME_PROMPT = "Session interrupted and resumed. Continue as you would have done without the interruption.";
+
+/** How long a session whose omp process died stays recorded. A stop signal
+ *  reaches every process in the service at once, so a child can die just
+ *  before omp-web's own shutdown handler runs; a crash while omp-web keeps
+ *  running is dropped after this window instead of resumed on the next start. */
+export const EXIT_GRACE_MS = 2_000;
+
+export interface InterruptibleSession {
+  id: string;
+  /** The child's spawn-time --advisor flag, restored on resume. */
+  advisor: boolean;
+}
+
+interface TrackerState {
+  sessions: Map<string, InterruptibleSession>;
+  drops: Map<string, NodeJS.Timeout>;
+  shuttingDown: boolean;
+}
+
+declare global {
+  var __ompResumeTracker: TrackerState | undefined;
+}
+
+// On globalThis so it survives Next.js hot-reload, like the session registry.
+function tracker(): TrackerState {
+  globalThis.__ompResumeTracker ??= { sessions: new Map(), drops: new Map(), shuttingDown: false };
+  return globalThis.__ompResumeTracker;
+}
+
+function interruptedPath(): string {
+  return resolve(getAgentDir(), "omp-web-interrupted-sessions.json");
+}
+
+function writeInterrupted(sessions: InterruptibleSession[]): void {
+  const path = interruptedPath();
+  try {
+    if (sessions.length === 0) {
+      rmSync(path, { force: true });
+      return;
+    }
+    mkdirSync(resolve(path, ".."), { recursive: true });
+    const temp = `${path}.tmp-${process.pid}-${Date.now()}`;
+    writeFileSync(temp, `${JSON.stringify({ sessions }, null, 2)}\n`, "utf8");
+    renameSync(temp, path);
+  } catch (error) {
+    console.warn(`[omp-web] could not record running sessions for resume: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+/**
+ * Keep the on-disk list of running sessions current. A session leaves the list
+ * when its run ends normally (its process is still alive), or EXIT_GRACE_MS
+ * after its process died unless omp-web is shutting down by then.
+ */
+export function recordRunningSessions(running: InterruptibleSession[], isAlive: (id: string) => boolean): void {
+  const state = tracker();
+  if (state.shuttingDown) return;
+  if (!loadWebServerSettings().autoResumeSessions) {
+    if (state.sessions.size > 0 || state.drops.size > 0) {
+      for (const timer of state.drops.values()) clearTimeout(timer);
+      state.drops.clear();
+      state.sessions.clear();
+      writeInterrupted([]);
+    }
+    return;
+  }
+  let changed = false;
+  const runningIds = new Set<string>();
+  for (const session of running) {
+    runningIds.add(session.id);
+    const drop = state.drops.get(session.id);
+    if (drop) {
+      clearTimeout(drop);
+      state.drops.delete(session.id);
+    }
+    const previous = state.sessions.get(session.id);
+    if (previous?.advisor !== session.advisor) {
+      state.sessions.set(session.id, session);
+      changed = true;
+    }
+  }
+  for (const id of state.sessions.keys()) {
+    if (runningIds.has(id)) continue;
+    if (isAlive(id)) {
+      state.sessions.delete(id);
+      changed = true;
+    } else if (!state.drops.has(id)) {
+      const timer = setTimeout(() => {
+        state.drops.delete(id);
+        if (state.shuttingDown || !state.sessions.delete(id)) return;
+        writeInterrupted([...state.sessions.values()]);
+      }, EXIT_GRACE_MS);
+      timer.unref?.();
+      state.drops.set(id, timer);
+    }
+  }
+  if (changed) writeInterrupted([...state.sessions.values()]);
+}
+
+/** Freeze the list: from here on, dying children are shutdown, not run ends. */
+export function markShuttingDown(): void {
+  tracker().shuttingDown = true;
+}
+
+/**
+ * Read and delete the list left by the previous run. Returns nothing when the
+ * setting is off, so a stale list never resumes sessions later.
+ */
+export function takeInterruptedSessions(): InterruptibleSession[] {
+  const path = interruptedPath();
+  if (!existsSync(path)) return [];
+  let sessions: InterruptibleSession[] = [];
+  try {
+    const raw: unknown = JSON.parse(readFileSync(path, "utf8"));
+    const list = isRecord(raw) && Array.isArray(raw.sessions) ? raw.sessions : [];
+    sessions = list.flatMap((entry) =>
+      isRecord(entry) && typeof entry.id === "string" && /^[A-Za-z0-9_-]{1,80}$/.test(entry.id)
+        ? [{ id: entry.id, advisor: entry.advisor === true }]
+        : []);
+  } catch {
+    // A corrupt list resumes nothing.
+  }
+  rmSync(path, { force: true });
+  return loadWebServerSettings().autoResumeSessions ? sessions : [];
+}

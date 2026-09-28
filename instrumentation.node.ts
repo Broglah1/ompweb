@@ -44,6 +44,17 @@ export async function register(): Promise<void> {
     }
   })();
 
+  // Resume sessions that were mid-run when omp-web last stopped (opt-in
+  // setting). Fire-and-forget: resuming must not block boot.
+  void (async () => {
+    try {
+      const { resumeInterruptedSessions } = await import("@/lib/rpc-manager");
+      await resumeInterruptedSessions();
+    } catch (error) {
+      console.warn(`[omp-web] session auto-resume failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  })();
+
   // Crash/stall journal: a long-running server that dies or wedges while the
   // user is away leaves no trace in a terminal that no longer exists (CLI runs
   // are killed with their terminal; pages then show endless loading until the
