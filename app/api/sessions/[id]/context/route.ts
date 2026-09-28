@@ -65,15 +65,24 @@ export async function GET(
     const resolved = await resolveSessionPathOr404(id);
     if ("response" in resolved) {
       // OMP may not create the file until the first assistant message is
-      // committed. A live wrapper can still recover that first partial reply.
-      // Never replace previously confirmed history when its file is missing.
-      const session = sync === "1" && !cursor?.lastEntryId && leafId === undefined ? getRpcSession(id) : undefined;
-      if (session?.isAlive() && !existsSync(session.sessionFile)) {
+      // committed, so a live wrapper can exist before its file does.
+      const live = getRpcSession(id);
+      const unpersisted = live?.isAlive() && !existsSync(live.sessionFile) ? live : undefined;
+      // A session created ahead of its first prompt (typing "/" loads commands
+      // through ensure_session) is idle and has persisted nothing: its run
+      // boundary is empty. While a run is in flight the boundary stays unknown
+      // (404) — that run's unpersisted entries must not count as the next one's.
+      if (unpersisted && boundary === "1" && !unpersisted.isRunning()) {
+        return NextResponse.json({ entryIds: [] }, { headers: { "Cache-Control": "no-store" } });
+      }
+      // A live wrapper can still recover that first partial reply. Never
+      // replace previously confirmed history when its file is missing.
+      if (unpersisted && sync === "1" && !cursor?.lastEntryId && leafId === undefined) {
         const response: SessionSyncResponse = {
           ...selectSessionHistory(buildSessionContext([]), cursor, limit),
           sessionId: id,
           leafId: null,
-          live: session.getStreamSnapshot(),
+          live: unpersisted.getStreamSnapshot(),
         };
         return NextResponse.json(response, { headers: { "Cache-Control": "no-store" } });
       }

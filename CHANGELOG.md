@@ -88,6 +88,7 @@ All notable changes to **omp-web** (`@kahme247/ompweb`) are documented in this f
 - Catch up missed conversation entries incrementally after reconnecting or returning to the page, including during active runs. Restore quiet partial responses and live tool output without duplicating history or overwriting newer updates.
 - Send prompts with image attachments in full again: commands reach OMP as one unchunked JSONL record. Protocol-v2 `rpc_chunk` framing is outbound-only, so any prompt over 1 MiB was rejected as `Unknown command: rpc_chunk` and reset the session after the prompt-ack timeout.
 - Show the **New session** fork action below agent replies as well as user prompts, so the newest message in a conversation can fork the session. omp's `branch` command accepts a user entry only, so each reply forks at the prompt that started its turn; replies with no earlier prompt keep no fork action.
+- Send the first message of a new session after typing `/` or running a slash command. Opening the command list starts the session before OMP has written its file, so the pre-send history check failed with `Failed to send message: HTTP 404`. An idle session with no file now counts as having no prior history; while a run is still unsaved, the check still reports it as unknown.
 
 ---
 
