@@ -16,6 +16,7 @@ All notable changes to **omp-web** (`@kahme247/ompweb`) are documented in this f
 
 ### Fixes & Improvements
 
+- Keep **Collapse input** available after expanding a long user message with **Show full input**, so the message can be collapsed again.
 - Render Nerd Font icons that omp sends when its symbol preset is set to Nerd (for example the multi-select **Done selecting** check mark) instead of empty boxes. The bundled symbols font (Nerd Fonts Symbols Only, SIL OFL 1.1, about 1.2 MB) applies only to Private Use Area codepoints and is downloaded only when a page shows one of these icons.
 - Show late LSP diagnostic notices with their original line breaks, like async results, instead of collapsing them onto one line.
 - Unexpected omp process exits now remain visible in the workspace and session sidebar until that session starts again, including the exit code or signal and the last stderr line.
