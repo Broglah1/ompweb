@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs";
 import { resolve } from "path";
 import { getAgentDir } from "./omp/paths";
+import { isValidSessionId } from "./session-file-references-core";
 import { isRecord } from "./type-guards";
 import { loadWebServerSettings } from "./web-settings";
 
@@ -122,7 +123,7 @@ export function takeInterruptedSessions(): InterruptibleSession[] {
     const raw: unknown = JSON.parse(readFileSync(path, "utf8"));
     const list = isRecord(raw) && Array.isArray(raw.sessions) ? raw.sessions : [];
     sessions = list.flatMap((entry) =>
-      isRecord(entry) && typeof entry.id === "string" && /^[A-Za-z0-9_-]{1,80}$/.test(entry.id)
+      isRecord(entry) && typeof entry.id === "string" && isValidSessionId(entry.id)
         ? [{ id: entry.id, advisor: entry.advisor === true }]
         : []);
   } catch {

@@ -164,6 +164,8 @@ hooks/
   list (`markShuttingDown`) so those deaths count as interrupted, while a
   crash with omp-web still up is dropped after the window.
 - Only session ids are stored; paths are re-resolved on resume.
+- Known limit: resume does not detect a terminal `omp --resume <id>` started
+  on the same session while omp-web was down; both would write the file.
 
 ### Two kinds of branching — don't confuse them
 - **Fork** (Fork button on user message): creates a new independent `.jsonl` file. Shown as a child in the sidebar tree via `parentSession` header field.
