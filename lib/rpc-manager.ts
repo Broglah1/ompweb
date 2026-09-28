@@ -14,6 +14,7 @@ import {
 } from "./session-reader";
 import { PRESET_FULL } from "./tool-presets";
 import { comparableProjectPath } from "./comparable-path";
+import { isRecord } from "./type-guards";
 import { isReservedLaunchArg, loadProjectRegistry } from "./project-registry";
 import type {
   BashResultInfo,
@@ -81,7 +82,17 @@ export class WebRpcError extends Error {
 
 // Extension UI methods that stay pending until the client answers (replayed to
 // newly-attached SSE listeners so dialogs survive reconnects).
-const PENDING_UI_METHODS = new Set(["select", "confirm", "input", "editor", "open_url"]);
+const PENDING_UI_METHODS = new Set(["select", "confirm", "input", "editor", "ask", "open_url"]);
+
+/** Shape check for an ask-dialog `answers` payload; omp validates the content. */
+function isAskAnswers(value: unknown): boolean {
+  return Array.isArray(value) && value.every((answer: unknown) =>
+    isRecord(answer)
+    && typeof answer.id === "string"
+    && Array.isArray(answer.selectedOptions)
+    && answer.selectedOptions.every((option: unknown) => typeof option === "string")
+    && (answer.customInput === undefined || typeof answer.customInput === "string"));
+}
 
 // Commands forwarded to omp verbatim (request shape already matches rpc-types).
 const PASSTHROUGH_COMMANDS = new Set([
@@ -371,6 +382,10 @@ export class AgentSessionWrapper {
     // a live subagent roster. Older omp builds may not know the command —
     // degrade silently (the UI falls back to no subagent info).
     await this.proc.sendCommand({ type: "set_subagent_subscription", level: "events" }).catch(() => {});
+    // Opt into omp's all-questions ask dialog; older omp rejects the command
+    // and keeps the per-question select/editor fallback.
+    // Bounded like get_state so a child that never answers cannot stall startup.
+    await this.proc.sendCommand({ type: "set_ask_dialog", enabled: true }, GET_STATE_TIMEOUT_MS).catch(() => {});
     const state = await this.getStateWithTimeout();
     this.applyIdentity(state);
     // Warn when the spawn cwd differs from the session's recorded directory.
@@ -1127,6 +1142,7 @@ export class AgentSessionWrapper {
         // The replacement process starts with subscriptions disabled; restore
         // the live roster/transcript event stream before reading its state.
         await proc.sendCommand({ type: "set_subagent_subscription", level: "events" }).catch(() => {});
+        await proc.sendCommand({ type: "set_ask_dialog", enabled: true }, GET_STATE_TIMEOUT_MS).catch(() => {});
         const state = await proc.sendCommand<RpcSessionState>({ type: "get_state" }, GET_STATE_TIMEOUT_MS);
         this.applyIdentity(state);
         // Same fresh-spawn guard as startRpcSession: a sessionless wrapper
@@ -1378,6 +1394,12 @@ export class AgentSessionWrapper {
 
       case "extension_ui_response": {
         const { id, ...rest } = command as { id: string; [key: string]: unknown };
+        const pendingAsk = this.pendingUiRequests.get(id)?.method === "ask";
+        // A pending ask accepts only its answers or a cancel; anything else would
+        // drop it from reconnect replay while omp rejects the payload.
+        if (("answers" in rest || pendingAsk) && !isAskAnswers(rest.answers) && !(pendingAsk && rest.cancelled === true)) {
+          throw new WebRpcError("Invalid ask dialog answers", "invalid_ask_answers");
+        }
         this.forgetPendingUiRequest(id);
         this.proc.sendFrame({ type: "extension_ui_response", id, ...rest });
         return null;
