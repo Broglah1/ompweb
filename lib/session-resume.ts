@@ -21,6 +21,8 @@ export interface InterruptibleSession {
 }
 
 interface TrackerState {
+  /** The list the previous run left behind, claimed before this run writes. */
+  leftover: InterruptibleSession[];
   sessions: Map<string, InterruptibleSession>;
   drops: Map<string, NodeJS.Timeout>;
   shuttingDown: boolean;
@@ -30,10 +32,30 @@ declare global {
   var __ompResumeTracker: TrackerState | undefined;
 }
 
-// On globalThis so it survives Next.js hot-reload, like the session registry.
+// On globalThis so it survives Next.js hot-reload and is shared by every
+// bundle that imports this module. Created on first use, which claims the
+// previous run's list before anything in this run can overwrite it.
 function tracker(): TrackerState {
-  globalThis.__ompResumeTracker ??= { sessions: new Map(), drops: new Map(), shuttingDown: false };
+  globalThis.__ompResumeTracker ??= { leftover: readLeftover(), sessions: new Map(), drops: new Map(), shuttingDown: false };
   return globalThis.__ompResumeTracker;
+}
+
+function readLeftover(): InterruptibleSession[] {
+  const path = interruptedPath();
+  if (!existsSync(path)) return [];
+  let sessions: InterruptibleSession[] = [];
+  try {
+    const raw: unknown = JSON.parse(readFileSync(path, "utf8"));
+    const list = isRecord(raw) && Array.isArray(raw.sessions) ? raw.sessions : [];
+    sessions = list.flatMap((entry) =>
+      isRecord(entry) && typeof entry.id === "string" && isValidSessionId(entry.id)
+        ? [{ id: entry.id, advisor: entry.advisor === true }]
+        : []);
+  } catch {
+    // A corrupt list resumes nothing.
+  }
+  rmSync(path, { force: true });
+  return sessions;
 }
 
 function interruptedPath(): string {
@@ -112,23 +134,12 @@ export function markShuttingDown(): void {
 }
 
 /**
- * Read and delete the list left by the previous run. Returns nothing when the
+ * Hand out the list left by the previous run, once. Returns nothing when the
  * setting is off, so a stale list never resumes sessions later.
  */
 export function takeInterruptedSessions(): InterruptibleSession[] {
-  const path = interruptedPath();
-  if (!existsSync(path)) return [];
-  let sessions: InterruptibleSession[] = [];
-  try {
-    const raw: unknown = JSON.parse(readFileSync(path, "utf8"));
-    const list = isRecord(raw) && Array.isArray(raw.sessions) ? raw.sessions : [];
-    sessions = list.flatMap((entry) =>
-      isRecord(entry) && typeof entry.id === "string" && isValidSessionId(entry.id)
-        ? [{ id: entry.id, advisor: entry.advisor === true }]
-        : []);
-  } catch {
-    // A corrupt list resumes nothing.
-  }
-  rmSync(path, { force: true });
+  const state = tracker();
+  const sessions = state.leftover;
+  state.leftover = [];
   return loadWebServerSettings().autoResumeSessions ? sessions : [];
 }

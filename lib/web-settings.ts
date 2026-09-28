@@ -15,11 +15,15 @@ function settingsPath(): string {
   return resolve(getAgentDir(), "omp-web-settings.json");
 }
 
-let cache: { path: string; settings: WebServerSettings } | null = null;
+declare global {
+  // Shared across module instances (instrumentation and route bundles).
+  var __ompWebSettingsCache: { path: string; settings: WebServerSettings } | undefined;
+}
 
 export function loadWebServerSettings(): WebServerSettings {
   const path = settingsPath();
-  if (cache?.path === path) return cache.settings;
+  const cached = globalThis.__ompWebSettingsCache;
+  if (cached?.path === path) return cached.settings;
   let settings = DEFAULTS;
   try {
     if (existsSync(path)) {
@@ -29,7 +33,7 @@ export function loadWebServerSettings(): WebServerSettings {
   } catch {
     // Unreadable settings fall back to the defaults.
   }
-  cache = { path, settings };
+  globalThis.__ompWebSettingsCache = { path, settings };
   return settings;
 }
 
@@ -49,6 +53,6 @@ export function saveWebServerSettings(patch: Partial<WebServerSettings>): WebSer
       // ignore cleanup failures
     }
   }
-  cache = { path, settings };
+  globalThis.__ompWebSettingsCache = { path, settings };
   return settings;
 }
