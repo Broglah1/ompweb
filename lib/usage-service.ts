@@ -1,12 +1,7 @@
-import { existsSync, statSync } from "fs";
-import { basename, join, resolve } from "path";
+import { statSync } from "fs";
+import { basename, join } from "path";
 import { readModelsConfig } from "./omp/models-config";
-import {
-  forEachFileLineSync,
-  invalidateSessionFileListCache,
-  readSessionHeaderSync,
-  resolveOwningSessionFile,
-} from "./omp/session-files";
+import { forEachFileLineSync, invalidateSessionFileListCache, readSessionHeaderSync } from "./omp/session-files";
 import { SUBAGENT_ID_RE } from "./subagent-types";
 import { isRecord } from "./type-guards";
 import {
@@ -169,12 +164,16 @@ export function computeTimeRangeBounds(
  * Parse one transcript .jsonl file and extract all Assistant usage records.
  * Uses mtime + file size cache to avoid disk reading on subsequent requests.
  *
- * Artifact transcripts (subagents, advisors, extension sub-sessions inside a
- * session's artifacts directory) are attributed to the session that owns that
- * directory — its id and cwd — rather than their own header, so they count
- * toward that session and project like `omp stats` attributes them.
+ * `sessionFile` is the session that owns the transcript. For a transcript in
+ * that session's artifacts directory (subagent, advisor, `/tan` clone,
+ * extension sub-session) the records carry the owner's id and cwd rather than
+ * the transcript's own header, so they count toward that session and project.
  */
-export function parseSessionUsage(filePath: string, customModelsConfig = readModelsConfig()): UsageRecord[] {
+export function parseSessionUsage(
+  filePath: string,
+  customModelsConfig = readModelsConfig(),
+  sessionFile = filePath,
+): UsageRecord[] {
   let stats;
   try {
     stats = statSync(filePath);
@@ -189,12 +188,13 @@ export function parseSessionUsage(filePath: string, customModelsConfig = readMod
     return cached.records;
   }
 
-  const ownerFile = resolveOwningSessionFile(filePath);
-  const isArtifact = ownerFile !== resolve(filePath);
-  const owner = isArtifact ? readSessionHeaderSync(ownerFile) : null;
-  let sessionId = owner?.id ?? basename(ownerFile, ".jsonl");
+  const isArtifact = sessionFile !== filePath;
+  const owner = isArtifact ? readSessionHeaderSync(sessionFile) : null;
+  let sessionId = owner?.id ?? basename(sessionFile, ".jsonl");
   let sessionCwd = owner?.cwd ?? "";
   let sessionTimestamp = stats.mtimeMs;
+  const ownerStarted = owner ? Date.parse(owner.timestamp) : NaN;
+  let sessionStarted = Number.isFinite(ownerStarted) ? ownerStarted : stats.mtimeMs;
   let activeProvider = "";
   let activeModel = "";
   const records: UsageRecord[] = [];
@@ -217,7 +217,10 @@ export function parseSessionUsage(filePath: string, customModelsConfig = readMod
         if (!isArtifact && typeof parsed.cwd === "string") sessionCwd = parsed.cwd;
         if (typeof parsed.timestamp === "string") {
           const t = new Date(parsed.timestamp).getTime();
-          if (!isNaN(t)) sessionTimestamp = t;
+          if (!isNaN(t)) {
+            sessionTimestamp = t;
+            if (!isArtifact) sessionStarted = t;
+          }
         }
         return;
       }
@@ -290,19 +293,25 @@ export function parseSessionUsage(filePath: string, customModelsConfig = readMod
                 cost,
                 cacheSavings,
                 costQuality: quality,
+                entryId: typeof parsed.id === "string" ? parsed.id : undefined,
+                sessionStarted,
               });
             }
           }
         } else if (role === "toolResult" && msg.toolName === "task" && isRecord(msg.details)) {
-          // A subagent's own transcript in the artifacts directory is counted as a
-          // transcript of its own (and background subagents never report usage
-          // here), so this summary counts only for a subagent without one —
-          // otherwise the same turns would be counted twice.
+          // A subagent that keeps its own transcript in the artifacts directory
+          // is counted from that transcript, so the summary names the file it
+          // duplicates and counts only while no copy of it has that transcript.
+          // Its entry id (task entry id + subagent id) lets copies of this
+          // summary made by /tan or a branch be recognized too (both decided per
+          // report, see collectUncountedUsage in usage-db.ts). Background
+          // subagents never report usage here at all.
           const results = Array.isArray(msg.details.results) ? msg.details.results : [];
-          for (const res of results) {
-            const hasTranscript = isRecord(res) && typeof res.id === "string" && SUBAGENT_ID_RE.test(res.id)
-              && existsSync(join(filePath.slice(0, -".jsonl".length), `${res.id}.jsonl`));
-            if (isRecord(res) && isRecord(res.usage) && !hasTranscript) {
+          for (const [index, res] of results.entries()) {
+            if (isRecord(res) && isRecord(res.usage)) {
+              const subagentFile = typeof res.id === "string" && SUBAGENT_ID_RE.test(res.id)
+                ? join(filePath.slice(0, -".jsonl".length), `${res.id}.jsonl`)
+                : undefined;
               const u = res.usage;
               const subModel = typeof res.resolvedModel === "string"
                 ? res.resolvedModel
@@ -356,6 +365,11 @@ export function parseSessionUsage(filePath: string, customModelsConfig = readMod
                   cost,
                   cacheSavings,
                   costQuality: quality,
+                  entryId: typeof parsed.id === "string"
+                    ? `${parsed.id}#${typeof res.id === "string" ? res.id : index}`
+                    : undefined,
+                  subagentFile,
+                  sessionStarted,
                 });
               }
             }
