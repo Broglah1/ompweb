@@ -26,6 +26,25 @@ export interface UsageRecord {
   cost: number;         // USD
   cacheSavings: number; // USD
   costQuality: CostQualityTier;
+  /**
+   * Id of the transcript entry the usage came from (for a `task` result
+   * summary: the task entry id + `#` + the subagent id). omp copies entries
+   * with their ids and timestamps (`/tan`, `/fork`, branches), so the same id
+   * + timestamp in several files is one billed request.
+   */
+  entryId?: string;
+  /**
+   * For a `task` result summary: the subagent transcript it duplicates
+   * (`<artifacts dir>/<id>.jsonl`). The summary only counts while neither it
+   * nor a copy of it has that transcript with usage from before the summary,
+   * since the transcript is counted in full.
+   */
+  subagentFile?: string;
+  /**
+   * Start of the session that owns the transcript (its header timestamp).
+   * Among copies of one request, the earliest-started session's row counts.
+   */
+  sessionStarted: number;
 }
 
 export interface UsageSummary {

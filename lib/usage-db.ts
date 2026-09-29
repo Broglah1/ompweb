@@ -3,7 +3,7 @@ import { DatabaseSync } from "node:sqlite";
 import { basename, dirname, join } from "path";
 import { readModelsConfig, type ModelsFileConfig } from "./omp/models-config";
 import { getAgentDir, getSessionsDir } from "./omp/paths";
-import { listSessionFiles } from "./omp/session-files";
+import { listSessionArtifactTranscripts, listSessionFiles } from "./omp/session-files";
 import {
   formatChartDateLabel,
   formatFullDateLabel,
@@ -11,6 +11,7 @@ import {
   toLocalDateString,
   toLocalMonthString,
   computeTimeRangeBounds,
+  USAGE_PARSER_VERSION,
 } from "./usage-service";
 import { getProviderColor, getProviderDisplayName } from "./usage-rates";
 import type {
@@ -30,6 +31,15 @@ declare global {
   var __ompUsageDatabasePath: string | undefined;
 }
 
+/**
+ * Table layout version, kept in `PRAGMA user_version`. A database from an
+ * older layout is dropped and rebuilt from the transcripts on disk: it is only
+ * a cache. v3 adds `entry_id`, `subagent_file`, `session_started` and `parser_version` (v2 was
+ * written by a pre-release build of this change with the old layout, so it
+ * must be rebuilt too).
+ */
+const USAGE_DB_SCHEMA_VERSION = 3;
+
 /** Get the path to the usage SQLite database file (~/.omp/agent/usage.db). */
 export function getUsageDbPath(): string {
   const dir = getAgentDir();
@@ -40,18 +50,94 @@ export function getUsageDbPath(): string {
 }
 
 /**
+ * Bring an open usage.db to the current table layout. An up-to-date database
+ * is left alone without taking the write lock. Otherwise the migration runs in
+ * one write transaction and re-checks the version under the lock, so two
+ * processes opening an old database cannot interleave a drop with the other's
+ * rebuild. Throws, after rolling back, when the migration cannot run.
+ */
+function migrateUsageDatabase(db: DatabaseSync): void {
+  const readSchemaVersion = (): number => {
+    const row = db.prepare("PRAGMA user_version").get();
+    return typeof row?.user_version === "number" ? row.user_version : 0;
+  };
+  if (readSchemaVersion() >= USAGE_DB_SCHEMA_VERSION) return;
+  try {
+    db.exec("BEGIN IMMEDIATE;");
+    if (readSchemaVersion() < USAGE_DB_SCHEMA_VERSION) {
+      db.exec(`
+        DROP TABLE IF EXISTS usage_records;
+        DROP TABLE IF EXISTS synced_files;
+
+        CREATE TABLE synced_files (
+          file_path TEXT PRIMARY KEY,
+          mtime_ms REAL NOT NULL,
+          file_size INTEGER NOT NULL,
+          records_count INTEGER NOT NULL,
+          synced_at INTEGER NOT NULL,
+          parser_version INTEGER
+        );
+
+        CREATE TABLE usage_records (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          file_path TEXT NOT NULL,
+          session_id TEXT NOT NULL,
+          session_cwd TEXT NOT NULL,
+          timestamp INTEGER NOT NULL,
+          provider TEXT NOT NULL,
+          model TEXT NOT NULL,
+          input_tokens INTEGER NOT NULL,
+          output_tokens INTEGER NOT NULL,
+          reasoning_tokens INTEGER NOT NULL,
+          cache_read_tokens INTEGER NOT NULL,
+          cache_write_tokens INTEGER NOT NULL,
+          total_tokens INTEGER NOT NULL,
+          cost REAL NOT NULL,
+          cache_savings REAL NOT NULL,
+          cost_quality TEXT NOT NULL,
+          entry_id TEXT,
+          subagent_file TEXT,
+          session_started INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE INDEX idx_usage_records_timestamp ON usage_records(timestamp);
+        CREATE INDEX idx_usage_records_file_path ON usage_records(file_path);
+        CREATE INDEX idx_usage_records_provider ON usage_records(provider);
+        CREATE INDEX idx_usage_records_session_cwd ON usage_records(session_cwd);
+        CREATE INDEX idx_usage_records_entry ON usage_records(entry_id, timestamp);
+
+        PRAGMA user_version = ${USAGE_DB_SCHEMA_VERSION};
+      `);
+    }
+    db.exec("COMMIT;");
+  } catch (err) {
+    if (db.isTransaction) db.exec("ROLLBACK;");
+    throw err;
+  }
+}
+
+/**
  * Open or reuse the persistent SQLite database for usage tracking.
  */
 export function getUsageDatabase(customPath?: string): DatabaseSync {
   const targetPath = customPath || getUsageDbPath();
 
-  if (globalThis.__ompUsageDatabase && globalThis.__ompUsageDatabasePath === targetPath) {
-    return globalThis.__ompUsageDatabase;
+  const cached = globalThis.__ompUsageDatabase;
+  if (cached && globalThis.__ompUsageDatabasePath === targetPath) {
+    // The connection lives on globalThis and outlives a dev hot reload, so the
+    // database may still have the layout of the code that opened it.
+    try {
+      migrateUsageDatabase(cached);
+    } catch (err) {
+      closeUsageDatabase();
+      throw err;
+    }
+    return cached;
   }
 
-  if (globalThis.__ompUsageDatabase) {
+  if (cached) {
     try {
-      globalThis.__ompUsageDatabase.close();
+      cached.close();
     } catch {
       // Ignore close error on re-init
     }
@@ -66,41 +152,12 @@ export function getUsageDatabase(customPath?: string): DatabaseSync {
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec("PRAGMA busy_timeout = 5000;");
   db.exec("PRAGMA synchronous = NORMAL;");
-
-  // Initialize schema
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS synced_files (
-      file_path TEXT PRIMARY KEY,
-      mtime_ms REAL NOT NULL,
-      file_size INTEGER NOT NULL,
-      records_count INTEGER NOT NULL,
-      synced_at INTEGER NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS usage_records (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      file_path TEXT NOT NULL,
-      session_id TEXT NOT NULL,
-      session_cwd TEXT NOT NULL,
-      timestamp INTEGER NOT NULL,
-      provider TEXT NOT NULL,
-      model TEXT NOT NULL,
-      input_tokens INTEGER NOT NULL,
-      output_tokens INTEGER NOT NULL,
-      reasoning_tokens INTEGER NOT NULL,
-      cache_read_tokens INTEGER NOT NULL,
-      cache_write_tokens INTEGER NOT NULL,
-      total_tokens INTEGER NOT NULL,
-      cost REAL NOT NULL,
-      cache_savings REAL NOT NULL,
-      cost_quality TEXT NOT NULL
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_usage_records_timestamp ON usage_records(timestamp);
-    CREATE INDEX IF NOT EXISTS idx_usage_records_file_path ON usage_records(file_path);
-    CREATE INDEX IF NOT EXISTS idx_usage_records_provider ON usage_records(provider);
-    CREATE INDEX IF NOT EXISTS idx_usage_records_session_cwd ON usage_records(session_cwd);
-  `);
+  try {
+    migrateUsageDatabase(db);
+  } catch (err) {
+    db.close();
+    throw err;
+  }
 
   globalThis.__ompUsageDatabase = db;
   globalThis.__ompUsageDatabasePath = targetPath;
@@ -128,8 +185,11 @@ export interface SyncStats {
 }
 
 /**
- * Incrementally sync all session .jsonl files into the SQLite usage database.
- * Only parses files that are new or whose mtime/size has changed.
+ * Incrementally sync session .jsonl files, plus every transcript in each
+ * session's artifacts directory (subagents, advisors, `/tan` clones, extension
+ * sub-sessions — each bills its own model usage), into the usage database.
+ * Artifact transcripts are attributed to the session they belong to. Only
+ * files that are new, changed, or last synced by other parsing rules are parsed.
  */
 export function syncSessionFilesToDb(
   sessionFiles: string[],
@@ -140,15 +200,16 @@ export function syncSessionFilesToDb(
   const now = Date.now();
 
   // 1. Fetch currently synced files from SQLite
-  const syncedRows = db.prepare("SELECT file_path, mtime_ms, file_size FROM synced_files").all() as Array<{
+  const syncedRows = db.prepare("SELECT file_path, mtime_ms, file_size, parser_version FROM synced_files").all() as Array<{
     file_path: string;
     mtime_ms: number;
     file_size: number;
+    parser_version: number | null;
   }>;
 
-  const syncedMap = new Map<string, { mtime_ms: number; file_size: number }>();
+  const syncedMap = new Map<string, { mtime_ms: number; file_size: number; parser_version: number | null }>();
   for (const row of syncedRows) {
-    syncedMap.set(row.file_path, { mtime_ms: row.mtime_ms, file_size: row.file_size });
+    syncedMap.set(row.file_path, { mtime_ms: row.mtime_ms, file_size: row.file_size, parser_version: row.parser_version });
   }
 
   let filesUpdated = 0;
@@ -158,24 +219,29 @@ export function syncSessionFilesToDb(
     INSERT INTO usage_records (
       file_path, session_id, session_cwd, timestamp, provider, model,
       input_tokens, output_tokens, reasoning_tokens, cache_read_tokens,
-      cache_write_tokens, total_tokens, cost, cache_savings, cost_quality
+      cache_write_tokens, total_tokens, cost, cache_savings, cost_quality,
+      entry_id, subagent_file, session_started
     ) VALUES (
       ?, ?, ?, ?, ?, ?,
       ?, ?, ?, ?,
-      ?, ?, ?, ?, ?
+      ?, ?, ?, ?, ?,
+      ?, ?, ?
     )
   `);
 
   const deleteRecordsStmt = db.prepare("DELETE FROM usage_records WHERE file_path = ?");
   const upsertSyncedFileStmt = db.prepare(`
-    INSERT OR REPLACE INTO synced_files (file_path, mtime_ms, file_size, records_count, synced_at)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT OR REPLACE INTO synced_files (file_path, mtime_ms, file_size, records_count, synced_at, parser_version)
+    VALUES (?, ?, ?, ?, ?, ?)
   `);
 
   const currentFilesSet = new Set<string>();
+  const transcripts = sessionFiles.flatMap((sessionFile) =>
+    [sessionFile, ...listSessionArtifactTranscripts(sessionFile)].map((filePath) => ({ filePath, sessionFile })),
+  );
 
   // 2. Incremental sync for new / modified files
-  for (const filePath of sessionFiles) {
+  for (const { filePath, sessionFile } of transcripts) {
     let stats;
     try {
       stats = statSync(filePath);
@@ -185,13 +251,18 @@ export function syncSessionFilesToDb(
     }
     currentFilesSet.add(filePath);
     const existing = syncedMap.get(filePath);
-    if (existing && existing.mtime_ms === stats.mtimeMs && existing.file_size === stats.size) {
-      // File has not changed since last sync
+    if (
+      existing &&
+      existing.mtime_ms === stats.mtimeMs &&
+      existing.file_size === stats.size &&
+      existing.parser_version === USAGE_PARSER_VERSION
+    ) {
+      // File has not changed since it was last synced by these rules
       continue;
     }
 
     // Parse records from disk
-    const records: UsageRecord[] = parseSessionUsage(filePath, customModelsConfig);
+    const records: UsageRecord[] = parseSessionUsage(filePath, customModelsConfig, sessionFile);
 
     // Save in transaction
     db.exec("BEGIN TRANSACTION;");
@@ -215,11 +286,14 @@ export function syncSessionFilesToDb(
           r.cost,
           r.cacheSavings,
           r.costQuality,
+          r.entryId ?? null,
+          r.subagentFile ?? null,
+          r.sessionStarted,
         );
         recordsInserted++;
       }
 
-      upsertSyncedFileStmt.run(filePath, stats.mtimeMs, stats.size, records.length, now);
+      upsertSyncedFileStmt.run(filePath, stats.mtimeMs, stats.size, records.length, now, USAGE_PARSER_VERSION);
       db.exec("COMMIT;");
       filesUpdated++;
     } catch (err) {
@@ -248,12 +322,62 @@ export function syncSessionFilesToDb(
   }
 
   return {
-    filesScanned: sessionFiles.length,
+    filesScanned: transcripts.length,
     filesUpdated,
     filesDeleted,
     recordsInserted,
   };
 }
+
+/**
+ * Rebuild `temp.uncounted_usage`: ids of stored rows the report must skip.
+ * - Copies. omp copies transcript entries, `task` summaries included, with
+ *   their ids and timestamps (`/tan` clones, `/fork` and branch copies, even
+ *   into another project folder), so the same (entry_id, timestamp) in several
+ *   files is one request. The row from the earliest-started owning session
+ *   counts — the original, since every copy starts later; a `/tan` clone ties
+ *   with its parent and loses on file path — and deleting that session hands
+ *   the entry to the next copy. Copies are rare, so they are found with one
+ *   sequential scan of the (entry_id, timestamp) index before any row-by-row
+ *   comparison.
+ * - `task` result summaries whose subagent transcript, next to this summary or
+ *   any copy of it, has usage from before the summary: that transcript is
+ *   counted in full. A later transcript that merely reuses the subagent id
+ *   (possible in a branch, which does not copy artifacts) does not cover it.
+ * Computed once per report so the report's queries share it.
+ */
+function collectUncountedUsage(db: DatabaseSync): void {
+  db.exec(`
+    DROP TABLE IF EXISTS temp.uncounted_usage;
+    CREATE TEMP TABLE uncounted_usage AS
+      SELECT r.id
+      FROM (
+        SELECT entry_id, timestamp FROM usage_records
+        WHERE entry_id IS NOT NULL
+        GROUP BY entry_id, timestamp
+        HAVING COUNT(*) > 1
+      ) copied
+      JOIN usage_records r ON r.entry_id = copied.entry_id AND r.timestamp = copied.timestamp
+      WHERE EXISTS (
+        SELECT 1 FROM usage_records o
+        WHERE o.entry_id = r.entry_id AND o.timestamp = r.timestamp
+          AND (o.session_started, o.file_path, o.id) < (r.session_started, r.file_path, r.id)
+      )
+      UNION
+      SELECT s.id FROM usage_records s
+      WHERE s.subagent_file IS NOT NULL AND (
+        EXISTS (SELECT 1 FROM usage_records t WHERE t.file_path = s.subagent_file AND t.timestamp <= s.timestamp)
+        OR EXISTS (
+          SELECT 1 FROM usage_records c
+          JOIN usage_records t ON t.file_path = c.subagent_file AND t.timestamp <= c.timestamp
+          WHERE c.entry_id = s.entry_id AND c.timestamp = s.timestamp
+        )
+      );
+  `);
+}
+
+/** Report filter: rows not listed by {@link collectUncountedUsage}. */
+const COUNTED_ROWS = "id NOT IN (SELECT id FROM temp.uncounted_usage)";
 
 /**
  * Execute SQL analytics queries over the SQLite database to generate a full UsageReport.
@@ -276,10 +400,12 @@ export async function getUsageReportFromDb(
     }
   }
 
-  // Sync latest sessions from disk before querying
+  // Sync latest sessions (and the helper transcripts in their artifacts
+  // directories) from disk before querying
   const sessionsDir = getSessionsDir();
   const sessionFiles = existsSync(sessionsDir) ? await listSessionFiles(sessionsDir) : [];
   syncSessionFilesToDb(sessionFiles, readModelsConfig(), db);
+  collectUncountedUsage(db);
   const hasExplicitBounds =
     typeof options.from === "number" &&
     typeof options.to === "number" &&
@@ -317,7 +443,7 @@ export async function getUsageReportFromDb(
         SUM(CASE WHEN cost_quality = 'model_priced' THEN 1 ELSE 0 END) AS modelPricedCount,
         SUM(CASE WHEN cost_quality = 'unpriced' THEN 1 ELSE 0 END) AS unpricedCount
       FROM usage_records
-      WHERE timestamp >= ? AND timestamp <= ? ${whereProject}
+      WHERE ${COUNTED_ROWS} AND timestamp >= ? AND timestamp <= ? ${whereProject}
     `,
     )
     .get(...params) as Record<string, number>;
@@ -367,7 +493,7 @@ export async function getUsageReportFromDb(
         COALESCE(SUM(cost), 0) AS cost,
         COALESCE(SUM(total_tokens), 0) AS tokens
       FROM usage_records
-      WHERE timestamp >= ? AND timestamp <= ? ${whereProject}
+      WHERE ${COUNTED_ROWS} AND timestamp >= ? AND timestamp <= ? ${whereProject}
       GROUP BY provider
       ORDER BY cost DESC, tokens DESC
     `,
@@ -405,7 +531,7 @@ export async function getUsageReportFromDb(
         COALESCE(SUM(cost), 0) AS cost,
         COALESCE(SUM(total_tokens), 0) AS tokens
       FROM usage_records
-      WHERE timestamp >= ? AND timestamp <= ? ${whereProject}
+      WHERE ${COUNTED_ROWS} AND timestamp >= ? AND timestamp <= ? ${whereProject}
       GROUP BY bucketDate, provider
       ORDER BY bucketDate ASC
     `,
@@ -526,7 +652,7 @@ export async function getUsageReportFromDb(
         COALESCE(SUM(reasoning_tokens), 0) AS reasoningTokens,
         COUNT(*) AS recordsCount
       FROM usage_records
-      WHERE timestamp >= ? AND timestamp <= ? ${whereProject}
+      WHERE ${COUNTED_ROWS} AND timestamp >= ? AND timestamp <= ? ${whereProject}
       GROUP BY model, provider
       ORDER BY cost DESC, tokens DESC
     `,
@@ -566,7 +692,7 @@ export async function getUsageReportFromDb(
         COALESCE(SUM(output_tokens), 0) AS outputTokens,
         COALESCE(SUM(cache_read_tokens), 0) AS cacheReadTokens
       FROM usage_records
-      WHERE timestamp >= ? AND timestamp <= ? ${whereProject}
+      WHERE ${COUNTED_ROWS} AND timestamp >= ? AND timestamp <= ? ${whereProject}
       GROUP BY date
       ORDER BY date DESC
     `,
@@ -601,7 +727,7 @@ export async function getUsageReportFromDb(
         COALESCE(SUM(total_tokens), 0) AS tokens,
         COUNT(DISTINCT session_id) AS sessionsCount
       FROM usage_records
-      WHERE timestamp >= ? AND timestamp <= ? ${whereProject}
+      WHERE ${COUNTED_ROWS} AND timestamp >= ? AND timestamp <= ? ${whereProject}
       GROUP BY session_cwd
       ORDER BY cost DESC, tokens DESC
     `,

@@ -1,7 +1,8 @@
 import { statSync } from "fs";
-import { basename } from "path";
+import { basename, join } from "path";
 import { readModelsConfig } from "./omp/models-config";
-import { forEachFileLineSync, invalidateSessionFileListCache } from "./omp/session-files";
+import { forEachFileLineSync, invalidateSessionFileListCache, readSessionHeaderSync } from "./omp/session-files";
+import { SUBAGENT_ID_RE } from "./subagent-types";
 import { isRecord } from "./type-guards";
 import {
   calculateCacheSavings,
@@ -16,7 +17,21 @@ import type {
   UsageTimeRange,
 } from "./usage-types";
 
+/**
+ * Version of the rules `parseSessionUsage` applies. Bump it whenever those
+ * rules change what a transcript yields: records from other rules are never
+ * reused. It is stored per synced file in usage.db — per file, not per
+ * database, because several omp-web builds can share one usage.db, so a file
+ * last synced by any other rule set is re-parsed — and on every in-memory
+ * cache entry, since the cache lives on globalThis and outlives a dev hot
+ * reload that brings in new rules.
+ * v2: artifact transcripts counted; entry ids, task-summary targets and the
+ * owning session's start stored.
+ */
+export const USAGE_PARSER_VERSION = 2;
+
 interface SessionUsageCacheEntry {
+  parserVersion: number;
   mtimeMs: number;
   size: number;
   records: UsageRecord[];
@@ -160,10 +175,19 @@ export function computeTimeRangeBounds(
 }
 
 /**
- * Parse an individual session .jsonl file and extract all Assistant usage records.
+ * Parse one transcript .jsonl file and extract all Assistant usage records.
  * Uses mtime + file size cache to avoid disk reading on subsequent requests.
+ *
+ * `sessionFile` is the session that owns the transcript. For a transcript in
+ * that session's artifacts directory (subagent, advisor, `/tan` clone,
+ * extension sub-session) the records carry the owner's id and cwd rather than
+ * the transcript's own header, so they count toward that session and project.
  */
-export function parseSessionUsage(filePath: string, customModelsConfig = readModelsConfig()): UsageRecord[] {
+export function parseSessionUsage(
+  filePath: string,
+  customModelsConfig = readModelsConfig(),
+  sessionFile = filePath,
+): UsageRecord[] {
   let stats;
   try {
     stats = statSync(filePath);
@@ -174,13 +198,17 @@ export function parseSessionUsage(filePath: string, customModelsConfig = readMod
 
   const cache = getUsageCache();
   const cached = cache.get(filePath);
-  if (cached && cached.mtimeMs === stats.mtimeMs && cached.size === stats.size) {
+  if (cached && cached.parserVersion === USAGE_PARSER_VERSION && cached.mtimeMs === stats.mtimeMs && cached.size === stats.size) {
     return cached.records;
   }
 
-  let sessionId = basename(filePath, ".jsonl");
-  let sessionCwd = "";
+  const isArtifact = sessionFile !== filePath;
+  const owner = isArtifact ? readSessionHeaderSync(sessionFile) : null;
+  let sessionId = owner?.id ?? basename(sessionFile, ".jsonl");
+  let sessionCwd = owner?.cwd ?? "";
   let sessionTimestamp = stats.mtimeMs;
+  const ownerStarted = owner ? Date.parse(owner.timestamp) : NaN;
+  let sessionStarted = Number.isFinite(ownerStarted) ? ownerStarted : stats.mtimeMs;
   let activeProvider = "";
   let activeModel = "";
   const records: UsageRecord[] = [];
@@ -199,11 +227,14 @@ export function parseSessionUsage(filePath: string, customModelsConfig = readMod
       const type = parsed.type;
 
       if (type === "session") {
-        if (typeof parsed.id === "string") sessionId = parsed.id;
-        if (typeof parsed.cwd === "string") sessionCwd = parsed.cwd;
+        if (!isArtifact && typeof parsed.id === "string") sessionId = parsed.id;
+        if (!isArtifact && typeof parsed.cwd === "string") sessionCwd = parsed.cwd;
         if (typeof parsed.timestamp === "string") {
           const t = new Date(parsed.timestamp).getTime();
-          if (!isNaN(t)) sessionTimestamp = t;
+          if (!isNaN(t)) {
+            sessionTimestamp = t;
+            if (!isArtifact) sessionStarted = t;
+          }
         }
         return;
       }
@@ -276,14 +307,32 @@ export function parseSessionUsage(filePath: string, customModelsConfig = readMod
                 cost,
                 cacheSavings,
                 costQuality: quality,
+                entryId: typeof parsed.id === "string" ? parsed.id : undefined,
+                sessionStarted,
               });
             }
           }
         } else if (role === "toolResult" && msg.toolName === "task" && isRecord(msg.details)) {
-          // Subagent task dispatches may carry usage results
+          // A subagent that keeps its own transcript in the artifacts directory
+          // is counted from that transcript, so the summary names the file it
+          // duplicates and counts only while no copy of it has that transcript.
+          // Its entry id (task entry id + subagent id) lets copies of this
+          // summary made by /tan or a branch be recognized too (both decided per
+          // report, see collectUncountedUsage in usage-db.ts). Background
+          // subagents never report usage here at all.
+          //
+          // omp writes a spawn's transcript into the artifacts directory of the
+          // session that ran the `task` call — that session's own file minus
+          // `.jsonl` (leaseArtifacts in omp's task/structured-subagent.ts) — which
+          // is the file this result is in, not the top-level owning session. So a
+          // nested spawn `Parent.Child` whose result is in `<session>/Parent.jsonl`
+          // lives at `<session>/Parent/Parent.Child.jsonl`.
           const results = Array.isArray(msg.details.results) ? msg.details.results : [];
-          for (const res of results) {
+          for (const [index, res] of results.entries()) {
             if (isRecord(res) && isRecord(res.usage)) {
+              const subagentFile = typeof res.id === "string" && SUBAGENT_ID_RE.test(res.id)
+                ? join(filePath.slice(0, -".jsonl".length), `${res.id}.jsonl`)
+                : undefined;
               const u = res.usage;
               const subModel = typeof res.resolvedModel === "string"
                 ? res.resolvedModel
@@ -337,6 +386,11 @@ export function parseSessionUsage(filePath: string, customModelsConfig = readMod
                   cost,
                   cacheSavings,
                   costQuality: quality,
+                  entryId: typeof parsed.id === "string"
+                    ? `${parsed.id}#${typeof res.id === "string" ? res.id : index}`
+                    : undefined,
+                  subagentFile,
+                  sessionStarted,
                 });
               }
             }
@@ -349,6 +403,7 @@ export function parseSessionUsage(filePath: string, customModelsConfig = readMod
   }
 
   setUsageCacheEntry(filePath, {
+    parserVersion: USAGE_PARSER_VERSION,
     mtimeMs: stats.mtimeMs,
     size: stats.size,
     records,

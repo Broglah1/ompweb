@@ -245,8 +245,11 @@ handled or safely ignored.
   `?mode=completion` (bounded tail read that also works for transcripts
   beyond the 16MB paging cap) with a live `get_subagents` snapshot fallback
   for header enrichment; it never pages the raw transcript. Subagent ids are
-  `[A-Za-z0-9_-]{1,80}` — the route validates before joining to confine reads
-  to the sibling dir.
+  `[A-Za-z0-9_-]+` segments joined by `.`, because omp names a nested spawn
+  `Parent.Child` (`SUBAGENT_ID_RE` in `lib/subagent-types.ts`, which also
+  keeps `/`, `\` and `..` out of the joined path). The transcript route caps
+  them at 100 characters and validates before joining to confine reads to the
+  sibling dir.
 - **In-message task summary** (`components/MessageView.tsx` TaskResultPanel):
   the session reader allowlists a SIZE-BOUNDED subset of `task` toolResult
   details (telemetry only — no `output`/`stderr`, long text truncated to
