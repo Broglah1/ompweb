@@ -11,6 +11,7 @@ import {
   toLocalDateString,
   toLocalMonthString,
   computeTimeRangeBounds,
+  USAGE_PARSER_VERSION,
 } from "./usage-service";
 import { getProviderColor, getProviderDisplayName } from "./usage-rates";
 import type {
@@ -33,21 +34,11 @@ declare global {
 /**
  * Table layout version, kept in `PRAGMA user_version`. A database from an
  * older layout is dropped and rebuilt from the transcripts on disk: it is only
- * a cache. v3 adds `entry_id`, `subagent_file` and `parser_version` (v2 was
+ * a cache. v3 adds `entry_id`, `subagent_file`, `session_started` and `parser_version` (v2 was
  * written by a pre-release build of this change with the old layout, so it
  * must be rebuilt too).
  */
 const USAGE_DB_SCHEMA_VERSION = 3;
-
-/**
- * Version of the rules `parseSessionUsage` applies, stored per synced file.
- * Unchanged files are never re-parsed, so bump this whenever the rules change
- * what a transcript yields. It is per file, not per database, because several
- * omp-web builds can share one usage.db: a file last synced by any other rule
- * set (including builds that predate this column) is re-parsed.
- * v2: artifact transcripts counted; entry ids and task-summary targets stored.
- */
-const USAGE_PARSER_VERSION = 2;
 
 /** Get the path to the usage SQLite database file (~/.omp/agent/usage.db). */
 export function getUsageDbPath(): string {
@@ -59,18 +50,94 @@ export function getUsageDbPath(): string {
 }
 
 /**
+ * Bring an open usage.db to the current table layout. An up-to-date database
+ * is left alone without taking the write lock. Otherwise the migration runs in
+ * one write transaction and re-checks the version under the lock, so two
+ * processes opening an old database cannot interleave a drop with the other's
+ * rebuild. Throws, after rolling back, when the migration cannot run.
+ */
+function migrateUsageDatabase(db: DatabaseSync): void {
+  const readSchemaVersion = (): number => {
+    const row = db.prepare("PRAGMA user_version").get();
+    return typeof row?.user_version === "number" ? row.user_version : 0;
+  };
+  if (readSchemaVersion() >= USAGE_DB_SCHEMA_VERSION) return;
+  try {
+    db.exec("BEGIN IMMEDIATE;");
+    if (readSchemaVersion() < USAGE_DB_SCHEMA_VERSION) {
+      db.exec(`
+        DROP TABLE IF EXISTS usage_records;
+        DROP TABLE IF EXISTS synced_files;
+
+        CREATE TABLE synced_files (
+          file_path TEXT PRIMARY KEY,
+          mtime_ms REAL NOT NULL,
+          file_size INTEGER NOT NULL,
+          records_count INTEGER NOT NULL,
+          synced_at INTEGER NOT NULL,
+          parser_version INTEGER
+        );
+
+        CREATE TABLE usage_records (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          file_path TEXT NOT NULL,
+          session_id TEXT NOT NULL,
+          session_cwd TEXT NOT NULL,
+          timestamp INTEGER NOT NULL,
+          provider TEXT NOT NULL,
+          model TEXT NOT NULL,
+          input_tokens INTEGER NOT NULL,
+          output_tokens INTEGER NOT NULL,
+          reasoning_tokens INTEGER NOT NULL,
+          cache_read_tokens INTEGER NOT NULL,
+          cache_write_tokens INTEGER NOT NULL,
+          total_tokens INTEGER NOT NULL,
+          cost REAL NOT NULL,
+          cache_savings REAL NOT NULL,
+          cost_quality TEXT NOT NULL,
+          entry_id TEXT,
+          subagent_file TEXT,
+          session_started INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE INDEX idx_usage_records_timestamp ON usage_records(timestamp);
+        CREATE INDEX idx_usage_records_file_path ON usage_records(file_path);
+        CREATE INDEX idx_usage_records_provider ON usage_records(provider);
+        CREATE INDEX idx_usage_records_session_cwd ON usage_records(session_cwd);
+        CREATE INDEX idx_usage_records_entry ON usage_records(entry_id, timestamp);
+
+        PRAGMA user_version = ${USAGE_DB_SCHEMA_VERSION};
+      `);
+    }
+    db.exec("COMMIT;");
+  } catch (err) {
+    if (db.isTransaction) db.exec("ROLLBACK;");
+    throw err;
+  }
+}
+
+/**
  * Open or reuse the persistent SQLite database for usage tracking.
  */
 export function getUsageDatabase(customPath?: string): DatabaseSync {
   const targetPath = customPath || getUsageDbPath();
 
-  if (globalThis.__ompUsageDatabase && globalThis.__ompUsageDatabasePath === targetPath) {
-    return globalThis.__ompUsageDatabase;
+  const cached = globalThis.__ompUsageDatabase;
+  if (cached && globalThis.__ompUsageDatabasePath === targetPath) {
+    // The connection lives on globalThis and outlives a dev hot reload, so the
+    // database may still have the layout of the code that opened it.
+    try {
+      migrateUsageDatabase(cached);
+    } catch (err) {
+      closeUsageDatabase();
+      throw err;
+    }
+    return cached;
   }
 
-  if (globalThis.__ompUsageDatabase) {
+  if (cached) {
     try {
-      globalThis.__ompUsageDatabase.close();
+      cached.close();
     } catch {
       // Ignore close error on re-init
     }
@@ -85,69 +152,11 @@ export function getUsageDatabase(customPath?: string): DatabaseSync {
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec("PRAGMA busy_timeout = 5000;");
   db.exec("PRAGMA synchronous = NORMAL;");
-
-  const readSchemaVersion = (): number => {
-    const row = db.prepare("PRAGMA user_version").get();
-    return typeof row?.user_version === "number" ? row.user_version : 0;
-  };
-  // An up-to-date database opens without taking the write lock. Otherwise the
-  // migration runs in one write transaction and re-checks the version under
-  // the lock, so two processes opening an old database cannot interleave a
-  // drop with the other's rebuild.
-  if (readSchemaVersion() < USAGE_DB_SCHEMA_VERSION) {
-    try {
-      db.exec("BEGIN IMMEDIATE;");
-      if (readSchemaVersion() < USAGE_DB_SCHEMA_VERSION) {
-        db.exec(`
-          DROP TABLE IF EXISTS usage_records;
-          DROP TABLE IF EXISTS synced_files;
-
-          CREATE TABLE synced_files (
-            file_path TEXT PRIMARY KEY,
-            mtime_ms REAL NOT NULL,
-            file_size INTEGER NOT NULL,
-            records_count INTEGER NOT NULL,
-            synced_at INTEGER NOT NULL,
-            parser_version INTEGER
-          );
-
-          CREATE TABLE usage_records (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            file_path TEXT NOT NULL,
-            session_id TEXT NOT NULL,
-            session_cwd TEXT NOT NULL,
-            timestamp INTEGER NOT NULL,
-            provider TEXT NOT NULL,
-            model TEXT NOT NULL,
-            input_tokens INTEGER NOT NULL,
-            output_tokens INTEGER NOT NULL,
-            reasoning_tokens INTEGER NOT NULL,
-            cache_read_tokens INTEGER NOT NULL,
-            cache_write_tokens INTEGER NOT NULL,
-            total_tokens INTEGER NOT NULL,
-            cost REAL NOT NULL,
-            cache_savings REAL NOT NULL,
-            cost_quality TEXT NOT NULL,
-            entry_id TEXT,
-            subagent_file TEXT,
-            session_started INTEGER NOT NULL DEFAULT 0
-          );
-
-          CREATE INDEX idx_usage_records_timestamp ON usage_records(timestamp);
-          CREATE INDEX idx_usage_records_file_path ON usage_records(file_path);
-          CREATE INDEX idx_usage_records_provider ON usage_records(provider);
-          CREATE INDEX idx_usage_records_session_cwd ON usage_records(session_cwd);
-          CREATE INDEX idx_usage_records_entry ON usage_records(entry_id, timestamp);
-
-          PRAGMA user_version = ${USAGE_DB_SCHEMA_VERSION};
-        `);
-      }
-      db.exec("COMMIT;");
-    } catch (err) {
-      if (db.isTransaction) db.exec("ROLLBACK;");
-      db.close();
-      throw err;
-    }
+  try {
+    migrateUsageDatabase(db);
+  } catch (err) {
+    db.close();
+    throw err;
   }
 
   globalThis.__ompUsageDatabase = db;

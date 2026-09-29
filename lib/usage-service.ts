@@ -17,7 +17,21 @@ import type {
   UsageTimeRange,
 } from "./usage-types";
 
+/**
+ * Version of the rules `parseSessionUsage` applies. Bump it whenever those
+ * rules change what a transcript yields: records from other rules are never
+ * reused. It is stored per synced file in usage.db — per file, not per
+ * database, because several omp-web builds can share one usage.db, so a file
+ * last synced by any other rule set is re-parsed — and on every in-memory
+ * cache entry, since the cache lives on globalThis and outlives a dev hot
+ * reload that brings in new rules.
+ * v2: artifact transcripts counted; entry ids, task-summary targets and the
+ * owning session's start stored.
+ */
+export const USAGE_PARSER_VERSION = 2;
+
 interface SessionUsageCacheEntry {
+  parserVersion: number;
   mtimeMs: number;
   size: number;
   records: UsageRecord[];
@@ -184,7 +198,7 @@ export function parseSessionUsage(
 
   const cache = getUsageCache();
   const cached = cache.get(filePath);
-  if (cached && cached.mtimeMs === stats.mtimeMs && cached.size === stats.size) {
+  if (cached && cached.parserVersion === USAGE_PARSER_VERSION && cached.mtimeMs === stats.mtimeMs && cached.size === stats.size) {
     return cached.records;
   }
 
@@ -382,6 +396,7 @@ export function parseSessionUsage(
   }
 
   setUsageCacheEntry(filePath, {
+    parserVersion: USAGE_PARSER_VERSION,
     mtimeMs: stats.mtimeMs,
     size: stats.size,
     records,
