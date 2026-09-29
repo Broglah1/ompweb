@@ -1323,3 +1323,40 @@ export function deleteSessionFileWithArtifacts(filePath: string): void {
     // The session file itself is already gone; artifact cleanup is best-effort.
   }
 }
+
+/**
+ * Every transcript (`*.jsonl`, any depth) in a session's artifacts directory:
+ * task subagents and their nested subagents, advisors (`__advisor*.jsonl`) and
+ * extension sub-sessions. Each carries its own model usage; `omp stats`
+ * attributes usage from exactly these files by scanning the session folder
+ * recursively. Returns [] when the session has no artifacts directory.
+ */
+export function listSessionArtifactTranscripts(sessionFile: string): string[] {
+  if (!sessionFile.endsWith(".jsonl")) return [];
+  let entries: Dirent[];
+  try {
+    entries = readDirectorySyncRuntime(sessionFile.slice(0, -".jsonl".length), { withFileTypes: true, recursive: true });
+  } catch {
+    return [];
+  }
+  return entries
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".jsonl"))
+    .map((entry) => path.join(entry.parentPath, entry.name));
+}
+
+/**
+ * The top-level session file that owns an artifact transcript, found by
+ * walking up while the containing directory is itself a session's artifacts
+ * directory (`<dir>.jsonl` exists) — the same rule omp uses to resolve a
+ * subagent transcript back to its interactive session. A top-level session
+ * file resolves to itself. The walk is capped against pathological layouts.
+ */
+export function resolveOwningSessionFile(filePath: string): string {
+  let current = path.resolve(filePath);
+  for (let depth = 0; depth < 8; depth++) {
+    const parent = `${path.dirname(current)}.jsonl`;
+    if (!existsSync(parent)) return current;
+    current = parent;
+  }
+  return current;
+}

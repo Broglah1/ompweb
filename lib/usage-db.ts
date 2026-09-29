@@ -3,7 +3,7 @@ import { DatabaseSync } from "node:sqlite";
 import { basename, dirname, join } from "path";
 import { readModelsConfig, type ModelsFileConfig } from "./omp/models-config";
 import { getAgentDir, getSessionsDir } from "./omp/paths";
-import { listSessionFiles } from "./omp/session-files";
+import { listSessionArtifactTranscripts, listSessionFiles } from "./omp/session-files";
 import {
   formatChartDateLabel,
   formatFullDateLabel,
@@ -29,6 +29,15 @@ declare global {
   var __ompUsageDatabase: DatabaseSync | undefined;
   var __ompUsageDatabasePath: string | undefined;
 }
+
+/**
+ * Version of the rules `parseSessionUsage` applies. Bump it whenever those
+ * rules change what a transcript yields: unchanged files are never re-parsed,
+ * so rows cached under older rules would otherwise stay mixed with new ones.
+ * v1: session files only; subagent usage taken from `task` result summaries.
+ * v2: artifact transcripts counted; a `task` summary only without a transcript.
+ */
+const USAGE_PARSER_VERSION = 2;
 
 /** Get the path to the usage SQLite database file (~/.omp/agent/usage.db). */
 export function getUsageDbPath(): string {
@@ -101,6 +110,11 @@ export function getUsageDatabase(customPath?: string): DatabaseSync {
     CREATE INDEX IF NOT EXISTS idx_usage_records_provider ON usage_records(provider);
     CREATE INDEX IF NOT EXISTS idx_usage_records_session_cwd ON usage_records(session_cwd);
   `);
+
+  const stored = db.prepare("PRAGMA user_version").get();
+  if (typeof stored?.user_version !== "number" || stored.user_version < USAGE_PARSER_VERSION) {
+    db.exec(`DELETE FROM usage_records; DELETE FROM synced_files; PRAGMA user_version = ${USAGE_PARSER_VERSION};`);
+  }
 
   globalThis.__ompUsageDatabase = db;
   globalThis.__ompUsageDatabasePath = targetPath;
@@ -276,10 +290,14 @@ export async function getUsageReportFromDb(
     }
   }
 
-  // Sync latest sessions from disk before querying
+  // Sync latest transcripts from disk before querying. Besides the sessions
+  // themselves this includes every transcript in their artifacts directories
+  // (subagents, advisors, extension sub-sessions), which bill their own model
+  // usage — the same set `omp stats` scans.
   const sessionsDir = getSessionsDir();
   const sessionFiles = existsSync(sessionsDir) ? await listSessionFiles(sessionsDir) : [];
-  syncSessionFilesToDb(sessionFiles, readModelsConfig(), db);
+  const transcriptFiles = sessionFiles.flatMap((file) => [file, ...listSessionArtifactTranscripts(file)]);
+  syncSessionFilesToDb(transcriptFiles, readModelsConfig(), db);
   const hasExplicitBounds =
     typeof options.from === "number" &&
     typeof options.to === "number" &&
@@ -639,7 +657,7 @@ export async function getUsageReportFromDb(
     )
     .get(...params) as { c: number };
 
-  const transcriptsScanned = totalSyncedRow?.c ?? sessionFiles.length;
+  const transcriptsScanned = totalSyncedRow?.c ?? transcriptFiles.length;
   const transcriptsInWindow = inWindowSyncedRow?.c ?? 0;
   const transcriptsOutsideWindow = Math.max(0, transcriptsScanned - transcriptsInWindow);
   const durationSeconds = Math.max(0.001, (Date.now() - startTime) / 1000);

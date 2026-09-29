@@ -12,7 +12,7 @@ import { closeSync, existsSync, openSync, readSync, realpathSync, statSync } fro
 import { basename, dirname, join } from "path";
 import { getSessionEntries, entryToUiMessage } from "./session-reader";
 import { parseJsonlLenient } from "./omp/session-files";
-import { asAgentSource, parseSubagentProgress } from "./subagent-types";
+import { asAgentSource, parseSubagentProgress, SUBAGENT_ID_RE } from "./subagent-types";
 import type { SubagentHistoryEntry, SubagentHistoryResult } from "./subagent-types";
 import type { AgentMessage, SessionEntry } from "./types";
 import { asNumber, asString, isRecord } from "./type-guards";
@@ -60,8 +60,6 @@ export function resolveSubagentArtifact(
   }
   return realCandidate;
 }
-
-const SUBAGENT_ID_RE = /^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/;
 
 function progressStatusToRoster(status: string | undefined): SubagentHistoryEntry["status"] {
   if (status === "completed") return "completed";

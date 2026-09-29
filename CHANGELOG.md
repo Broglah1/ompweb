@@ -88,6 +88,7 @@ All notable changes to **omp-web** (`@kahme247/ompweb`) are documented in this f
 - Catch up missed conversation entries incrementally after reconnecting or returning to the page, including during active runs. Restore quiet partial responses and live tool output without duplicating history or overwriting newer updates.
 - Send prompts with image attachments in full again: commands reach OMP as one unchunked JSONL record. Protocol-v2 `rpc_chunk` framing is outbound-only, so any prompt over 1 MiB was rejected as `Unknown command: rpc_chunk` and reset the session after the prompt-ack timeout.
 - Show the **New session** fork action below agent replies as well as user prompts, so the newest message in a conversation can fork the session. omp's `branch` command accepts a user entry only, so each reply forks at the prompt that started its turn; replies with no earlier prompt keep no fork action.
+- Count subagents, advisors and extension helper sessions in Settings → **Usage**. Their model usage lives in transcripts inside each session's artifacts folder, which the Usage page never read; it counted only subagent summaries in `task` results, and background subagents leave those empty. Each transcript is now counted once and attributed to the session and project that owns it, matching `omp stats`. Existing usage caches rebuild once on first load.
 
 ---
 
